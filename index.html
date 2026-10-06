@@ -40,6 +40,14 @@ dialog::backdrop{background:rgba(0,0,0,.45)}dialog.wide{max-width:min(96vw,980px
 dialog h2{margin:0 0 10px;font-size:17px}
 .f{display:grid;gap:5px;margin:10px 0}.f input,.f select{padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit}
 .row{display:flex;gap:8px;flex-wrap:wrap}.row>*{flex:1}.acts{display:flex;gap:8px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap}
+th[data-sort]{cursor:pointer;user-select:none}th[data-sort]:hover{color:var(--ink)}
+.tabs{display:flex;gap:6px;margin-bottom:14px;border-bottom:1px solid var(--line)}
+.tab{border:0;border-bottom:3px solid transparent;border-radius:0;background:none;padding:8px 14px;font-weight:600;color:var(--mute)}
+.tab.on{color:var(--ink);border-bottom-color:var(--green)}
+a.btn{display:inline-block;text-decoration:none;font-size:13px;padding:4px 9px;border:1px solid var(--line);border-radius:8px;color:var(--ink);background:var(--card);margin:2px 4px 2px 0;white-space:nowrap}
+a.btn.primary{background:var(--btn);color:var(--btnink);border-color:var(--btn)}
+#lrows input{width:100%;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);font:inherit;margin-bottom:4px}
+#lrows td{min-width:200px}#lrows td:first-child,#lrows td:nth-child(2){min-width:0}
 .chart text{fill:var(--mute);font-size:11px}.chart rect{fill:var(--green)}
 #report table{min-width:0;font-size:13px}
 @media print{header,.controls,.cards,#main>*:not(#reportHost),.acts,button{display:none!important}dialog{border:0;max-width:none;box-shadow:none}body{background:#fff;color:#000}}
@@ -55,6 +63,8 @@ dialog h2{margin:0 0 10px;font-size:17px}
   </div>
 </header>
 <main id="main">
+  <nav class="tabs"><button class="tab on" id="tInv">Inventory</button><button class="tab" id="tLinks">Purchase links</button></nav>
+  <div id="pageInv">
   <div id="banners"></div>
   <div class="cards" id="cards"></div>
   <div class="panel"><b>Seed used per week (all tracked varieties, last 12 weeks)</b><div id="chart"></div></div>
@@ -64,11 +74,24 @@ dialog h2{margin:0 0 10px;font-size:17px}
     <label><input type="checkbox" id="showInactive"> Include inactive varieties</label>
   </div>
   <div class="tw"><table>
-    <thead><tr><th>Variety</th><th class="r">On hand</th><th>% of last bag</th><th class="r">Trays left</th><th class="r">Used 7 days</th><th>12-wk use</th><th>Est. run-out</th><th>Status</th><th></th></tr></thead>
-    <tbody id="rows"><tr><td colspan="9" class="sub">Loading…</td></tr></tbody>
+    <thead id="invHead"><tr><th data-sort="name" title="Click to sort A–Z, click again to reverse">Variety<span class="arr"></span></th><th class="r" data-sort="onHand">On hand<span class="arr"></span></th><th data-sort="pct">% of last bag<span class="arr"></span></th><th class="r" data-sort="trays">Trays left<span class="arr"></span></th><th class="r" data-sort="used7">Used 7 days<span class="arr"></span></th><th data-sort="use12">12-wk use<span class="arr"></span></th><th data-sort="runOut" title="Click to sort soonest first, click again to reverse">Est. run-out<span class="arr"></span></th><th data-sort="counted" title="Click to sort oldest first, click again to reverse">Last counted<span class="arr"></span></th><th data-sort="status">Status<span class="arr"></span></th><th>Order</th><th></th></tr></thead>
+    <tbody id="rows"><tr><td colspan="11" class="sub">Loading…</td></tr></tbody>
   </table></div>
   <p class="sub">Seed used = trays planted × seed density (grams per tray, taken from each batch when it was planted), subtracted from your last count. Low = on hand under 25% of the most recent bag. Mixes and lettuce are not tracked. Bags that are "Finished" or "Ordered" in seed_inventory are ignored.</p>
   <div id="reportHost"></div>
+  </div>
+  <div id="pageLinks" hidden>
+    <div class="controls">
+      <input type="search" id="lq" placeholder="Search varieties…">
+      <button class="sm" id="lExport">Export links</button><button class="sm" id="lImport">Import links</button>
+      <span class="sub" id="lflash"></span>
+    </div>
+    <p class="sub">Add up to three places to buy each variety (supplier name + web link). When a variety is low, out, or runs out soon, order buttons appear next to it on the Inventory tab. Links save automatically in this browser only; use Export / Import to copy them to another device.</p>
+    <div class="tw"><table>
+      <thead id="lHead"><tr><th data-sort="name">Variety<span class="arr"></span></th><th data-sort="status">Status<span class="arr"></span></th><th>Primary choice</th><th>Secondary choice</th><th>Third choice</th></tr></thead>
+      <tbody id="lrows"></tbody>
+    </table></div>
+  </div>
 </main>
 
 <dialog id="dSettings">
@@ -97,6 +120,14 @@ dialog h2{margin:0 0 10px;font-size:17px}
 <dialog id="dReport" class="wide">
   <div id="report"></div>
   <div class="acts"><button id="rCopy">Copy as text</button><button id="rCsv">Download CSV</button><button id="rPrint">Print / Save PDF</button><button id="rClose" class="primary">Close</button></div>
+</dialog>
+
+<dialog id="dHist" class="wide">
+  <h2 id="hTitle"></h2>
+  <div class="sub">The dashboard uses the newest entry. Delete an entry to fall back to the one before it. Deleting is permanent. Deleting a "bag added" entry also removes the seed it added.</div>
+  <div id="hList" class="tw" style="margin-top:10px"></div>
+  <div class="warn" id="hErr"></div>
+  <div class="acts"><button id="hClose" class="primary">Close</button></div>
 </dialog>
 
 <script>
@@ -183,8 +214,9 @@ function compute() {
     const o = byV[v.id], lots = lotsBy[v.id] || [], sd = num(v.sd);
     const used7 = o.planted.filter(p => now - p.at <= 7 * DAY).reduce((a, p) => a + p.g, 0);
     const used28 = o.planted.filter(p => now - p.at <= 28 * DAY).reduce((a, p) => a + p.g, 0);
-    const weeks = Array(12).fill(0);
-    o.planted.forEach(p => { const i = Math.max(0, Math.floor((now - p.at) / (7 * DAY))); if (i < 12) weeks[i] += p.g; });
+    const weeks = Array(12).fill(0);   // calendar weeks starting Sunday; index 0 = the current week so far
+    const sun0 = new Date(today.getFullYear(), today.getMonth(), today.getDate() - today.getDay());
+    o.planted.forEach(p => { const ps = new Date(p.at.getFullYear(), p.at.getMonth(), p.at.getDate() - p.at.getDay()); const i = Math.max(0, Math.round((sun0 - ps) / (7 * DAY))); if (i < 12) weeks[i] += p.g; });
     const fut = o.future.sort((a, b) => a.date - b.date);
     const need28 = fut.filter(f => f.date - today <= 28 * DAY).reduce((a, f) => a + f.g, 0);
     const futTotal = fut.reduce((a, f) => a + f.g, 0);
@@ -238,10 +270,12 @@ function spark(arr) {
 function chart(rows) {
   const tot = Array(12).fill(0); rows.forEach(r => r.weeks.forEach((g, i) => tot[i] += g));
   const a = tot.slice().reverse(), max = Math.max(...a, 1), W = 720, H = 150, bw = W / 12;
-  return `<svg class="chart" viewBox="0 0 ${W} ${H + 22}" width="100%" role="img" aria-label="Weekly seed use">` +
+  const t0 = new Date(), sun0 = new Date(t0.getFullYear(), t0.getMonth(), t0.getDate() - t0.getDay());
+  const weekLabel = wk => new Date(sun0.getFullYear(), sun0.getMonth(), sun0.getDate() - wk * 7).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return `<svg class="chart" viewBox="0 0 ${W} ${H + 22}" width="100%" role="img" aria-label="Seed used per week, by week starting Sunday">` +
     a.map((g, i) => { const bh = g / max * (H - 18), x = i * bw + 6, wk = 11 - i; return `<rect x="${x.toFixed(1)}" y="${(H - bh).toFixed(1)}" width="${(bw - 12).toFixed(1)}" height="${bh.toFixed(1)}" rx="3"/>` +
       `<text x="${(x + (bw - 12) / 2).toFixed(1)}" y="${(H - bh - 4).toFixed(1)}" text-anchor="middle">${g ? (g / G_PER_LB).toFixed(1) : ''}</text>` +
-      `<text x="${(x + (bw - 12) / 2).toFixed(1)}" y="${H + 14}" text-anchor="middle">${wk === 0 ? 'now' : '-' + wk + 'w'}</text>`; }).join('') + '</svg><div class="sub">Pounds of seed per week</div>';
+      `<text x="${(x + (bw - 12) / 2).toFixed(1)}" y="${H + 14}" text-anchor="middle">${weekLabel(wk)}</text>`; }).join('') + '</svg><div class="sub">Pounds of seed used per week. Each bar is labeled with that week\'s Sunday; the last bar is the current week so far.</div>';
 }
 
 function render() {
@@ -261,25 +295,53 @@ function render() {
   $('#chart').innerHTML = chart(rows);
   $('#stamp').textContent = state.loadedAt ? 'Updated ' + state.loadedAt.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'Not loaded yet';
   drawRows();
+  if (!$('#pageLinks').hidden && !$('#pageLinks').contains(document.activeElement)) drawLinks();
+}
+// ---- sorting (click a column header; click again to reverse) ----
+const sortState = { inv: { key: null, dir: 1 }, links: { key: null, dir: 1 } };
+const SRANK = { OUT: 0, LOW: 1, SOON: 2, OK: 3, SETUP: 4 };
+const SORTERS = { name: r => r.name.toLowerCase(), onHand: r => r.onHand, pct: r => r.pct, trays: r => r.trays, used7: r => r.used7,
+  use12: r => r.weeks.reduce((a, b) => a + b, 0), runOut: r => r.runOut ? r.runOut.getTime() : null, counted: r => r.baseAt ? r.baseAt.getTime() : null, status: r => SRANK[r.status] };
+function sortRows(list, t) {
+  const st = sortState[t]; if (!st.key) return list;
+  const f = SORTERS[st.key];
+  return list.slice().sort((a, b) => {
+    const x = f(a), y = f(b), xn = x === null || x === undefined, yn = y === null || y === undefined;
+    if (xn || yn) return xn && yn ? a.name.localeCompare(b.name) : (xn ? 1 : -1);   // blanks always last
+    const c = typeof x === 'string' ? x.localeCompare(y) : x - y;
+    return c ? c * st.dir : a.name.localeCompare(b.name);
+  });
+}
+function toggleSort(t, key) { const st = sortState[t]; if (st.key === key) st.dir = -st.dir; else { st.key = key; st.dir = 1; } }
+function markSort(t, head) {
+  if (!head || !head.querySelectorAll) return;
+  head.querySelectorAll('th[data-sort]').forEach(th => {
+    const on = sortState[t].key === th.dataset.sort;
+    th.setAttribute('aria-sort', on ? (sortState[t].dir > 0 ? 'ascending' : 'descending') : 'none');
+    th.querySelector('.arr').textContent = on ? (sortState[t].dir > 0 ? ' ▲' : ' ▼') : '';
+  });
 }
 function drawRows() {
   const q = $('#q').value.trim().toLowerCase(), only = $('#onlyLow').checked;
-  const list = state.rows.filter(r => (!q || r.name.toLowerCase().includes(q)) && (!only || ['LOW', 'OUT', 'SOON'].includes(r.status)));
+  const list = sortRows(state.rows.filter(r => (!q || r.name.toLowerCase().includes(q)) && (!only || ['LOW', 'OUT', 'SOON'].includes(r.status))), 'inv');
+  markSort('inv', $('#invHead'));
   const labels = { LOW: 'LOW', OUT: 'OUT', SOON: 'RUNS OUT SOON', OK: 'OK', SETUP: 'COUNT NEEDED' };
   $('#rows').innerHTML = list.length ? list.map(r => {
     const setup = r.status === 'SETUP';
     return `<tr>
       <td><b>${esc(r.name)}</b><div class="sub">${r.sd > 0 ? r.sd + ' g/tray' : '<span class="warn">No seed density set</span>'}</div></td>
-      <td class="r">${setup ? '<span class="sub">—</span>' : `<b>${gFmt(r.onHand)}</b><div class="sub">${lbFmt(r.onHand)}</div><div class="sub">counted ${fmtD(r.baseAt)}</div>`}</td>
+      <td class="r">${setup ? '<span class="sub">—</span>' : `<b>${gFmt(r.onHand)}</b><div class="sub">${lbFmt(r.onHand)}</div>`}</td>
       <td>${setup ? '' : `<div class="bar ${r.status}"><i style="width:${Math.max(0, Math.min(100, r.pct)).toFixed(0)}%"></i></div><div class="sub">${r.pct.toFixed(0)}% of ${lbFmt(r.lot)}</div>`}</td>
       <td class="r">${r.trays === null ? '—' : Math.floor(r.trays).toLocaleString('en-US')}</td>
       <td class="r">${gFmt(r.used7)}<div class="sub">${lbFmt(r.used7)}</div></td>
       <td>${spark(r.weeks)}</td>
       <td>${setup ? '—' : r.runOut ? `${fmtD(r.runOut)}<div class="sub">${esc(r.runNote)}</div>` : `<span class="sub">${esc(r.runNote || '—')}</span>`}</td>
+      <td>${setup ? '—' : esc(fmtD(r.baseAt))}</td>
       <td><span class="chip ${r.status}">${labels[r.status]}</span></td>
+      <td>${orderCell(r)}</td>
       <td style="white-space:nowrap">${setup ? `<button class="sm primary" data-a="setup" data-id="${esc(r.id)}">Enter count</button>` :
-        `<button class="sm primary" data-a="restock" data-id="${esc(r.id)}">+ Add seed</button> <button class="sm" data-a="recount" data-id="${esc(r.id)}">Enter count</button>`}</td>
-    </tr>`; }).join('') : '<tr><td colspan="9" class="sub">Nothing to show.</td></tr>';
+        `<button class="sm primary" data-a="restock" data-id="${esc(r.id)}">+ Add seed</button> <button class="sm" data-a="recount" data-id="${esc(r.id)}">Enter count</button> <button class="sm" data-a="history" data-id="${esc(r.id)}">History</button>`}</td>
+    </tr>`; }).join('') : '<tr><td colspan="11" class="sub">Nothing to show.</td></tr>';
 }
 
 // ---- add / count dialogs ----
@@ -306,7 +368,7 @@ async function saveAct() {
   if (when.getTime() > Date.now() + 60000) { $('#aErr').textContent = 'The date can\'t be in the future.'; return; }
   const { kind, r } = act, btn = $('#aGo'); $('#aErr').textContent = '';
   if (kind === 'restock' && r.baseAt && when < r.baseAt) { $('#aErr').textContent = `That bag arrived before your last count (${fmtD(r.baseAt)}), so it is already included. Use a date after the last count, or enter a fresh count instead.`; return; }
-  if (kind !== 'restock' && r.baseAt && when < r.baseAt && !confirm(`You already have a newer count (${fmtD(r.baseAt)}). This older entry will be saved but won't change the numbers. Save it anyway?`)) return;
+  if (kind !== 'restock' && r.baseAt && when < r.baseAt && !confirm(`You already have a newer count (${fmtD(r.baseAt)}). This older entry will be saved but won't change the numbers unless you delete the newer one in History. Save it anyway?`)) return;
   btn.disabled = true;
   try {
     const gr = Math.round(g * 100) / 100;
@@ -317,6 +379,82 @@ async function saveAct() {
     $('#dAct').close(); await loadInv();
   } catch (e) { $('#aErr').textContent = 'Save failed: ' + e.message; }
   btn.disabled = false;
+}
+
+// ---- purchase links (saved in this browser) ----
+const LK = 'hrh_seed_links', CHOICES = ['Primary', 'Secondary', 'Third'];
+const STATUS_LABELS = { LOW: 'LOW', OUT: 'OUT', SOON: 'RUNS OUT SOON', OK: 'OK', SETUP: 'COUNT NEEDED' };
+const getLinks = () => { try { return JSON.parse(store.get(LK) || '{}') || {}; } catch (e) { return {}; } };
+const setLinks = o => store.set(LK, JSON.stringify(o));
+function normUrl(u) { // '' = empty, null = not a valid web link, else cleaned http(s) URL
+  u = String(u || '').trim(); if (!u) return '';
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(u)) u = 'https://' + u;
+  try { const x = new URL(u); return /^https?:$/.test(x.protocol) ? x.href : null; } catch (e) { return null; }
+}
+function orderCell(r) {
+  if (!['LOW', 'OUT', 'SOON'].includes(r.status)) return '<span class="sub">—</span>';
+  const c = getLinks()[r.id] || [];
+  const btns = [0, 1, 2].filter(i => c[i] && normUrl(c[i].url)).map((i, n) =>
+    `<a class="btn ${n === 0 ? 'primary' : ''}" href="${esc(normUrl(c[i].url))}" target="_blank" rel="noopener noreferrer">${n === 0 ? 'Order' : 'Alt'}: ${esc(c[i].label || CHOICES[i])}</a>`);
+  return btns.length ? btns.join('') : `<button class="sm" data-a="addlink" data-id="${esc(r.id)}">Add order link</button>`;
+}
+function drawLinks() {
+  const q = $('#lq').value.trim().toLowerCase(), L = getLinks();
+  const list = sortRows(state.rows.filter(r => !q || r.name.toLowerCase().includes(q)), 'links');
+  markSort('links', $('#lHead'));
+  $('#lrows').innerHTML = list.length ? list.map(r => {
+    const c = L[r.id] || [];
+    const cell = i => { const x = c[i] || {}; return `<td><input data-v="${esc(r.id)}" data-i="${i}" data-f="label" value="${esc(x.label || '')}" placeholder="Supplier name"><input data-v="${esc(r.id)}" data-i="${i}" data-f="url" value="${esc(x.url || '')}" placeholder="https://…">${x.url && normUrl(x.url) ? `<a class="btn" data-open="1" href="${esc(normUrl(x.url))}" target="_blank" rel="noopener noreferrer">Open</a>` : ''}</td>`; };
+    return `<tr id="lr-${esc(r.id)}"><td><b>${esc(r.name)}</b></td><td><span class="chip ${r.status}">${STATUS_LABELS[r.status]}</span></td>${cell(0)}${cell(1)}${cell(2)}</tr>`;
+  }).join('') : '<tr><td colspan="5" class="sub">No varieties loaded yet. Open the Inventory tab and press Refresh.</td></tr>';
+}
+function flash(m) { $('#lflash').textContent = m; setTimeout(() => { if ($('#lflash').textContent === m) $('#lflash').textContent = ''; }, 2500); }
+function showTab(t) {
+  $('#pageInv').hidden = t !== 'inv'; $('#pageLinks').hidden = t !== 'links';
+  $('#tInv').classList.toggle('on', t === 'inv'); $('#tLinks').classList.toggle('on', t === 'links');
+  if (t === 'links') drawLinks();
+}
+$('#tInv').onclick = () => showTab('inv'); $('#tLinks').onclick = () => showTab('links');
+$('#lq').oninput = drawLinks;
+$('#lrows').onchange = e => {
+  const el = e.target; if (!el.dataset || !el.dataset.v) return;
+  const td = el.closest('td'), urlEl = td.querySelector('input[data-f="url"]'), label = td.querySelector('input[data-f="label"]').value.trim();
+  const url = normUrl(urlEl.value);
+  if (url === null) { urlEl.style.borderColor = 'var(--red)'; flash('That is not a valid web link (it must start with http or https).'); return; }
+  urlEl.style.borderColor = ''; if (url) urlEl.value = url;
+  const L = getLinks(), arr = L[el.dataset.v] || [{}, {}, {}];
+  arr[+el.dataset.i] = { label, url }; L[el.dataset.v] = arr; setLinks(L);
+  const old = td.querySelector('a[data-open]'); if (old) old.remove();
+  if (url) { const a = document.createElement('a'); a.className = 'btn'; a.dataset.open = '1'; a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.textContent = 'Open'; td.appendChild(a); }
+  flash('Saved'); drawRows();
+};
+$('#lExport').onclick = async () => {
+  const txt = JSON.stringify(getLinks());
+  try { await navigator.clipboard.writeText(txt); flash('Copied. Paste it into Import on the other device.'); } catch (e) { prompt('Copy this text:', txt); }
+};
+$('#lImport').onclick = () => {
+  const t = prompt('Paste the exported links text here:'); if (!t) return;
+  try {
+    const inc = JSON.parse(t), L = getLinks(); let n = 0;
+    Object.keys(inc).forEach(v => { if (!Array.isArray(inc[v])) return; const arr = [0, 1, 2].map(i => { const x = inc[v][i] || {}, u = normUrl(x.url); return u ? { label: String(x.label || '').slice(0, 60), url: u } : {}; }); if (arr.some(x => x.url)) { L[v] = arr; n++; } });
+    setLinks(L); drawLinks(); drawRows(); flash(`Imported links for ${n} variet${n === 1 ? 'y' : 'ies'}.`);
+  } catch (e) { alert('That text is not valid exported links.'); }
+};
+
+// ---- count history ----
+let histVar = null;
+function openHist(id) { histVar = id; $('#hErr').textContent = ''; drawHist(); $('#dHist').showModal(); }
+function drawHist() {
+  const r = state.rows.find(x => x.id === histVar);
+  const name = r ? r.name : (state.varieties.find(v => v.id === histVar) || {}).name || '';
+  const list = state.counts.filter(c => c.variety_id === histVar).sort((a, b) => (pd(b.counted_at) || 0) - (pd(a.counted_at) || 0));
+  const inUse = r && r.countRow ? r.countRow.id : null;
+  $('#hTitle').textContent = `Count history — ${name}`;
+  $('#hList').innerHTML = list.length ? `<table style="min-width:0"><thead><tr><th>Date</th><th>Type</th><th class="r">Total on hand</th><th class="r">Bag added</th><th>Note</th><th></th></tr></thead><tbody>` +
+    list.map(c => { const d = pd(c.counted_at), g = num(c.counted_grams), a = num(c.added_grams);
+      return `<tr><td>${d ? esc(d.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })) : '—'}${c.id === inUse ? ' <span class="chip OK">IN USE</span>' : ''}</td>
+        <td>${c.entry_type === 'restock' ? 'Bag added' : 'Count'}</td><td class="r">${gFmt(g)}<div class="sub">${lbFmt(g)}</div></td><td class="r">${a ? lbFmt(a) : '—'}</td><td>${esc(c.note || '')}</td>
+        <td><button class="sm" data-del="${esc(c.id)}">Delete</button></td></tr>`; }).join('') + '</tbody></table>' : '<p class="sub" style="padding:10px">No saved counts for this variety.</p>';
 }
 
 // ---- report ----
@@ -332,10 +470,11 @@ function buildReport() {
   $('#report').innerHTML = `<h2>Seed inventory report</h2><div class="sub">Generated ${now.toLocaleString('en-US')} · week of ${fmtD(weekStart)}</div>
     <p><b>${order.length}</b> variet${order.length === 1 ? 'y needs' : 'ies need'} attention. Seed used in the last 7 days: <b>${gFmt(totUsed)}</b> (${lbFmt(totUsed)}). Seed planned for the next 28 days: <b>${gFmt(totNeed)}</b> (${lbFmt(totNeed)}).</p>
     <h3>Order / watch list</h3>${order.length ? `<table>${head}<tbody>${order.map(tr).join('')}</tbody></table>` : '<p>Nothing is low.</p>'}
+    ${order.length ? `<h3>Where to order</h3><ul>${order.map(r => { const c = (getLinks()[r.id] || []).filter(x => x && normUrl(x.url)); return `<li><b>${esc(r.name)}</b>: ${c.length ? c.map((x, i) => `<a href="${esc(normUrl(x.url))}">${esc(x.label || CHOICES[i])}</a>`).join(' · ') : '<span class="sub">no link saved</span>'}</li>`; }).join('')}</ul>` : ''}
     <h3>All counted varieties</h3><table>${head}<tbody>${rows.map(tr).join('')}</tbody></table>
     ${needCount.length ? `<p class="sub">No count yet: ${needCount.map(r => esc(r.name)).join(', ')}</p>` : ''}`;
   const L = r => `${r.name}: ${gFmt(r.onHand)} (${lbFmt(r.onHand)}), ${r.pct.toFixed(0)}% of bag, ~${r.trays === null ? '?' : Math.floor(r.trays)} trays, used 7d ${gFmt(r.used7)}, run-out ${r.runOut ? fmtD(r.runOut) : 'n/a'} [${r.status}]`;
-  reportText = `HRH SEED INVENTORY — week of ${fmtD(weekStart)}\nNeeds attention (${order.length}):\n` + (order.map(L).join('\n') || 'None') + `\n\nAll counted varieties:\n` + rows.map(L).join('\n');
+  reportText = `HRH SEED INVENTORY — week of ${fmtD(weekStart)}\nNeeds attention (${order.length}):\n` + (order.map(r => L(r) + ((getLinks()[r.id] || []).filter(x => x && normUrl(x.url)).map(x => `\n   Order: ${x.label || 'link'} ${normUrl(x.url)}`).join(''))).join('\n') || 'None') + `\n\nAll counted varieties:\n` + rows.map(L).join('\n');
   reportCsv = 'Variety,On hand (g),On hand (lb),% of bag,Trays left,Used last 7d (g),Planned next 28d (g),Run-out,Status\n' +
     rows.map(r => [`"${r.name.replace(/"/g, '""')}"`, r.onHand.toFixed(0), (r.onHand / G_PER_LB).toFixed(2), r.pct.toFixed(0), r.trays === null ? '' : Math.floor(r.trays), r.used7.toFixed(0), r.need28.toFixed(0), r.runOut ? fmtD(r.runOut) : '', r.status].join(',')).join('\n');
   $('#dReport').showModal();
@@ -353,7 +492,19 @@ $('#bSettings').onclick = openSettings;
 $('#bRefresh').onclick = load;
 $('#bReport').onclick = () => { if (!state.rows.length) return; buildReport(); };
 $('#q').oninput = drawRows; $('#onlyLow').onchange = drawRows; $('#showInactive').onchange = render;
-$('#rows').onclick = e => { const b = e.target.closest('button[data-a]'); if (b) openAct(b.dataset.a, b.dataset.id); };
+$('#rows').onclick = e => { const b = e.target.closest('button[data-a]'); if (!b) return; if (b.dataset.a === 'history') openHist(b.dataset.id);
+  else if (b.dataset.a === 'addlink') { showTab('links'); const row = document.getElementById('lr-' + b.dataset.id); const inp = row && row.querySelector('input[data-f="label"]'); if (inp) { row.scrollIntoView({ block: 'center' }); inp.focus(); } }
+  else openAct(b.dataset.a, b.dataset.id); };
+$('#invHead').onclick = e => { const th = e.target.closest('th[data-sort]'); if (!th) return; toggleSort('inv', th.dataset.sort); drawRows(); };
+$('#lHead').onclick = e => { const th = e.target.closest('th[data-sort]'); if (!th) return; toggleSort('links', th.dataset.sort); drawLinks(); };
+$('#hClose').onclick = () => $('#dHist').close();
+$('#hList').onclick = async e => {
+  const b = e.target.closest('button[data-del]'); if (!b) return;
+  if (!confirm('Delete this count entry permanently? The dashboard will use the next newest entry.')) return;
+  b.disabled = true; $('#hErr').textContent = '';
+  try { await api('GR', 'seed_counts', 'Delete', [{ id: b.dataset.del }]); await loadInv(); drawHist(); }
+  catch (err) { $('#hErr').textContent = 'Delete failed: ' + err.message + ' (AppSheet: allow Deletes on the seed_counts table.)'; b.disabled = false; }
+};
 $('#aCancel').onclick = () => $('#dAct').close(); $('#aGo').onclick = saveAct;
 const prev = () => { const g = actGrams(); $('#aPrev').textContent = g > 0 ? `= ${gFmt(g)} = ${lbFmt(g)}` : ''; };
 $('#aAmt').oninput = prev; $('#aUnit').onchange = prev;

@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HRH Seed Inventory</title>
+<style>
+:root{--bg:#f6f7f4;--card:#fff;--ink:#1d2a1f;--mute:#667568;--line:#dfe4dc;--green:#2f7d4a;--amber:#b7791f;--red:#c0392b;--redbg:#fdecea;--ambbg:#fff4de;--grnbg:#e5f4ea;--blue:#2b6cb0;--btn:#2f7d4a;--btnink:#fff}
+@media (prefers-color-scheme:dark){:root{--bg:#141a15;--card:#1d261f;--ink:#e8efe9;--mute:#9aa99c;--line:#2f3b31;--redbg:#3a1f1c;--ambbg:#3a2f18;--grnbg:#1c3324;--green:#5fbf80;--amber:#e0a84a;--red:#ef6f62;--blue:#6aa9e8;--btn:#3d9a5c}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+header{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:5}
+h1{font-size:18px;margin:0}h1 small{display:block;font-weight:400;color:var(--mute);font-size:12px}
+main{max-width:1250px;margin:0 auto;padding:16px}
+button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--ink);padding:7px 12px;border-radius:8px;cursor:pointer}
+button.primary{background:var(--btn);color:var(--btnink);border-color:var(--btn)}button:hover{filter:brightness(.96)}button.sm{padding:4px 9px;font-size:13px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.card .n{font-size:26px;font-weight:700}.card .l{color:var(--mute);font-size:13px}
+.card.low .n{color:var(--red)}.card.soon .n{color:var(--amber)}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:14px}
+.banner{border-radius:10px;padding:10px 14px;margin-bottom:12px;background:var(--ambbg);border:1px solid var(--amber)}
+.banner.err{background:var(--redbg);border-color:var(--red)}
+.controls{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:10px}
+.controls input[type=search]{padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);min-width:200px}
+.controls label{color:var(--mute);font-size:14px}
+.tw{overflow-x:auto;background:var(--card);border:1px solid var(--line);border-radius:12px}
+table{border-collapse:collapse;width:100%;min-width:980px}
+th,td{padding:9px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:middle}
+th{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--mute);white-space:nowrap}
+td.r,th.r{text-align:right}tr:last-child td{border-bottom:0}
+.sub{color:var(--mute);font-size:12px}
+.chip{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;font-weight:600;white-space:nowrap}
+.chip.LOW,.chip.OUT{background:var(--redbg);color:var(--red)}.chip.SOON{background:var(--ambbg);color:var(--amber)}.chip.OK{background:var(--grnbg);color:var(--green)}.chip.SETUP{background:var(--line);color:var(--mute)}
+.bar{height:7px;border-radius:4px;background:var(--line);overflow:hidden;min-width:70px}.bar i{display:block;height:100%;background:var(--green)}
+.bar.LOW i,.bar.OUT i{background:var(--red)}.bar.SOON i{background:var(--amber)}
+.warn{color:var(--amber);font-size:12px}
+svg.sp rect{fill:var(--blue)}
+dialog{border:1px solid var(--line);border-radius:14px;background:var(--card);color:var(--ink);padding:18px;max-width:min(94vw,520px);width:100%}
+dialog::backdrop{background:rgba(0,0,0,.45)}dialog.wide{max-width:min(96vw,980px)}
+dialog h2{margin:0 0 10px;font-size:17px}
+.f{display:grid;gap:5px;margin:10px 0}.f input,.f select{padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit}
+.row{display:flex;gap:8px;flex-wrap:wrap}.row>*{flex:1}.acts{display:flex;gap:8px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap}
+.chart text{fill:var(--mute);font-size:11px}.chart rect{fill:var(--green)}
+#report table{min-width:0;font-size:13px}
+@media print{header,.controls,.cards,#main>*:not(#reportHost),.acts,button{display:none!important}dialog{border:0;max-width:none;box-shadow:none}body{background:#fff;color:#000}}
+</style>
+</head>
+<body>
+<header>
+  <h1>HRH Seed Inventory<small id="stamp">Not loaded yet</small></h1>
+  <div class="row" style="flex:0 0 auto">
+    <button id="bRefresh">Refresh</button>
+    <button id="bReport" class="primary">Generate report</button>
+    <button id="bSettings">Settings</button>
+  </div>
+</header>
+<main id="main">
+  <div id="banners"></div>
+  <div class="cards" id="cards"></div>
+  <div class="panel"><b>Seed used per week (all tracked varieties, last 12 weeks)</b><div id="chart"></div></div>
+  <div class="controls">
+    <input type="search" id="q" placeholder="Search varieties…">
+    <label><input type="checkbox" id="onlyLow"> Only low / out / soon</label>
+    <label><input type="checkbox" id="showInactive"> Include inactive varieties</label>
+  </div>
+  <div class="tw"><table>
+    <thead><tr><th>Variety</th><th class="r">On hand</th><th>% of last bag</th><th class="r">Trays left</th><th class="r">Used 7 days</th><th>12-wk use</th><th>Est. run-out</th><th>Status</th><th></th></tr></thead>
+    <tbody id="rows"><tr><td colspan="9" class="sub">Loading…</td></tr></tbody>
+  </table></div>
+  <p class="sub">Seed used = trays planted × seed density (grams per tray, taken from each batch when it was planted), subtracted from your last count. Low = on hand under 25% of the most recent bag. Mixes and lettuce are not tracked. Bags that are "Finished" or "Ordered" in seed_inventory are ignored.</p>
+  <div id="reportHost"></div>
+</main>
+
+<dialog id="dSettings">
+  <h2>Settings</h2>
+  <div class="f"><label>Growth Controls API key (batches &amp; varieties)</label><input id="sKeyGC" type="password" autocomplete="off" placeholder="V2-…"></div>
+  <div class="f"><label>Growth Recipes API key (seed_inventory)</label><input id="sKeyGR" type="password" autocomplete="off" placeholder="V2-…"></div>
+  <div class="f"><label>Growth Controls App ID</label><input id="sAppGC" autocomplete="off"></div>
+  <div class="f"><label>Growth Recipes App ID</label><input id="sAppGR" autocomplete="off"></div>
+  <p class="sub">Saved only in this browser (never in the repo). Needed once on each device you use.</p>
+  <div class="acts"><button id="sCancel">Cancel</button><button id="sSave" class="primary">Save &amp; load</button></div>
+</dialog>
+
+<dialog id="dAct">
+  <h2 id="aTitle"></h2><div class="sub" id="aSub"></div>
+  <div class="row">
+    <div class="f"><label id="aLabel">Amount</label><input id="aAmt" type="number" min="0" step="any" inputmode="decimal"></div>
+    <div class="f"><label>Unit</label><select id="aUnit"><option value="lb">pounds</option><option value="g">grams</option></select></div>
+  </div>
+  <div class="sub" id="aPrev"></div>
+  <div class="f" id="aNoteW"><label>Lot # (optional)</label><input id="aNote" placeholder="From the seed bag"></div>
+  <div class="warn" id="aErr"></div>
+  <div class="acts"><button id="aCancel">Cancel</button><button id="aGo" class="primary">Save</button></div>
+</dialog>
+
+<dialog id="dReport" class="wide">
+  <div id="report"></div>
+  <div class="acts"><button id="rCopy">Copy as text</button><button id="rCsv">Download CSV</button><button id="rPrint">Print / Save PDF</button><button id="rClose" class="primary">Close</button></div>
+</dialog>
+
+<script>
+(() => {
+'use strict';
+const APPS = { GC: '0ddb09d1-5e1c-434e-9e6e-ce46a54cd628', GR: 'fe7f55b7-a021-4f49-a9cb-c5528e8de84e' }; // Growth Controls, Growth Recipes
+const G_PER_LB = 453.592, DAY = 864e5, LOW_PCT = 25, SOON_DAYS = 14, ACTIVE = ['In Use', 'On Shelf'];
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const num = v => { const n = parseFloat(String(v ?? '').replace(/,/g, '')); return isFinite(n) ? n : 0; };
+const has = v => String(v ?? '').trim() !== '';
+const store = { get: k => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} } };
+const key = w => store.get('hrh_seed_key_' + w) || '';
+const appId = w => store.get('hrh_seed_app_' + w) || APPS[w];
+const uid = () => Array.from(crypto.getRandomValues(new Uint8Array(4)), b => b.toString(16).padStart(2, '0')).join('');
+const p2 = n => String(n).padStart(2, '0');
+const fmtDT = d => `${p2(d.getMonth()+1)}/${p2(d.getDate())}/${d.getFullYear()} ${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`;
+const fmtDate = d => `${p2(d.getMonth()+1)}/${p2(d.getDate())}/${d.getFullYear()}`;
+const fmtD = d => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+const gFmt = g => Math.round(g).toLocaleString('en-US') + ' g';
+const lbFmt = g => (g / G_PER_LB).toFixed(2) + ' lb';
+function pd(s) {
+  if (!s) return null;
+  const m = String(s).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  return m ? new Date(+m[3], +m[1]-1, +m[2], +(m[4]||0), +(m[5]||0), +(m[6]||0)) : null;
+}
+
+async function api(which, table, action, rows) {
+  const r = await fetch(`https://api.appsheet.com/api/v2/apps/${appId(which)}/tables/${encodeURIComponent(table)}/Action`, {
+    method: 'POST',
+    headers: { 'ApplicationAccessKey': key(which), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ Action: action, Properties: { Locale: 'en-US' }, Rows: rows || [] })
+  });
+  const t = await r.text();
+  if (!r.ok) throw new Error(`${table}: HTTP ${r.status} ${t.replace(/\s+/g, ' ').slice(0, 200)}`);
+  if (!t.trim()) return [];
+  const j = JSON.parse(t);
+  return Array.isArray(j) ? j : (j.Rows || []);
+}
+
+const state = { varieties: [], batches: [], inv: [], needCols: false, rows: [], loadedAt: null, err: null, invErr: null };
+
+async function load() {
+  if (!key('GC') || !key('GR')) { openSettings(); return; }
+  $('#stamp').textContent = 'Loading…';
+  state.err = null;
+  try {
+    const [v, b] = await Promise.all([api('GC', 'variety', 'Find'), api('GC', 'batch', 'Find')]);
+    state.varieties = v; state.batches = b;
+  } catch (e) { state.err = e.message; render(); return; }
+  await loadInv();
+}
+async function loadInv() {
+  state.invErr = null;
+  try { state.inv = await api('GR', 'seed_inventory', 'Find'); }
+  catch (e) { state.inv = []; state.invErr = e.message; }
+  state.needCols = state.inv.length > 0 && !('counted_grams' in state.inv[0] && 'counted_at' in state.inv[0]);
+  state.loadedAt = new Date();
+  render();
+}
+
+function compute() {
+  const now = new Date(), today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const showInactive = $('#showInactive').checked;
+  const vars = state.varieties.filter(v => v.reserve_1 === 'Microgreen' && v['mix?'] !== 'Y' && !/^testing/i.test(v.name || '') &&
+    (showInactive ? v.production_status !== 'DRAFT' : v.production_status === 'ACTIVE'));
+  const byV = {};
+  vars.forEach(v => byV[v.id] = { v, planted: [], future: [] });
+  state.batches.forEach(b => {
+    const o = byV[b.variety]; if (!o) return;
+    const trays = num(b.number_of_trays), sd = num(b._sd) || num(o.v.sd);
+    if (b.actual_planting_date) {
+      const at = pd(b.actual_planting_date); if (at) o.planted.push({ at, trays, sd, g: trays * sd });
+    } else {
+      const d = pd(b.optimal_planting_date);
+      if (d && d >= today) o.future.push({ date: d, trays, sd, g: trays * sd });
+    }
+  });
+  const lotsBy = {}; state.inv.forEach(l => (lotsBy[l.variety_id] = lotsBy[l.variety_id] || []).push(l));
+
+  const rows = vars.map(v => {
+    const o = byV[v.id], lots = lotsBy[v.id] || [], sd = num(v.sd);
+    const used7 = o.planted.filter(p => now - p.at <= 7 * DAY).reduce((a, p) => a + p.g, 0);
+    const used28 = o.planted.filter(p => now - p.at <= 28 * DAY).reduce((a, p) => a + p.g, 0);
+    const weeks = Array(12).fill(0);
+    o.planted.forEach(p => { const i = Math.max(0, Math.floor((now - p.at) / (7 * DAY))); if (i < 12) weeks[i] += p.g; });
+    const fut = o.future.sort((a, b) => a.date - b.date);
+    const need28 = fut.filter(f => f.date - today <= 28 * DAY).reduce((a, f) => a + f.g, 0);
+    const futTotal = fut.reduce((a, f) => a + f.g, 0);
+    // latest count (counted_grams = everything on the shelf at counted_at; additions bump it)
+    const counted = lots.filter(l => pd(l.counted_at) && has(l.counted_grams)).sort((a, b) => pd(b.counted_at) - pd(a.counted_at));
+    const countRow = counted[0] || null;
+    // row to hold a first count: the "In Use" lot, else newest On Shelf lot
+    const act = lots.filter(l => ACTIVE.includes(l.status));
+    const lotDate = l => pd(l.date_recieved) || pd(l['lot # Start']) || new Date(0);
+    const primary = act.filter(l => l.status === 'In Use')[0] || act.sort((a, b) => lotDate(b) - lotDate(a))[0] || null;
+    const refLot = act.filter(l => num(l.total_lbs) > 0).sort((a, b) => lotDate(b) - lotDate(a))[0] || null;
+    const r = { id: v.id, name: v.name, sd, used7, used28, weeks, need28, countRow, primary, status: 'SETUP', onHand: null, lot: 0, pct: null, trays: null, runOut: null, runNote: '' };
+    if (countRow) {
+      const baseAt = pd(countRow.counted_at), base = num(countRow.counted_grams);
+      const used = o.planted.filter(p => p.at >= baseAt).reduce((a, p) => a + p.g, 0);
+      r.onHand = base - used;
+      r.lot = refLot ? num(refLot.total_lbs) * G_PER_LB : base;
+      r.pct = r.lot > 0 ? r.onHand / r.lot * 100 : 0;
+      r.trays = sd > 0 ? Math.max(0, r.onHand) / sd : null;
+      if (r.onHand <= 0) { r.runOut = today; r.runNote = 'out now'; }
+      else {
+        let cum = 0;
+        for (const f of fut) { cum += f.g; if (cum > r.onHand) { r.runOut = f.date; r.runNote = 'scheduled plantings'; break; } }
+        if (!r.runOut) {
+          const rate = used28 / 28;
+          if (rate > 0) {
+            const last = fut.length ? fut[fut.length - 1].date : today;
+            r.runOut = new Date(last.getTime() + Math.max(0, r.onHand - futTotal) / rate * DAY);
+            r.runNote = fut.length ? 'after schedule ends, at recent pace' : 'at recent pace';
+          } else r.runNote = 'no recent use';
+        }
+      }
+      const days = r.runOut ? (r.runOut - today) / DAY : null;
+      r.status = r.onHand <= 0 ? 'OUT' : r.pct < LOW_PCT ? 'LOW' : (days !== null && days <= SOON_DAYS) ? 'SOON' : 'OK';
+    }
+    return r;
+  });
+  const rank = { OUT: 0, LOW: 1, SOON: 2, OK: 3, SETUP: 4 };
+  rows.sort((a, b) => rank[a.status] - rank[b.status] || a.name.localeCompare(b.name));
+  return rows;
+}
+
+function spark(arr) {
+  const a = arr.slice().reverse(), max = Math.max(...a, 1), w = 84, h = 22, bw = w / a.length;
+  return `<svg class="sp" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">` +
+    a.map((v, i) => { const bh = Math.max(v ? 2 : 0, v / max * h); return `<rect x="${(i*bw).toFixed(1)}" y="${(h-bh).toFixed(1)}" width="${(bw-1.5).toFixed(1)}" height="${bh.toFixed(1)}" rx="1"/>`; }).join('') + '</svg>';
+}
+function chart(rows) {
+  const tot = Array(12).fill(0); rows.forEach(r => r.weeks.forEach((g, i) => tot[i] += g));
+  const a = tot.slice().reverse(), max = Math.max(...a, 1), W = 720, H = 150, bw = W / 12;
+  return `<svg class="chart" viewBox="0 0 ${W} ${H + 22}" width="100%" role="img" aria-label="Weekly seed use">` +
+    a.map((g, i) => { const bh = g / max * (H - 18), x = i * bw + 6, wk = 11 - i; return `<rect x="${x.toFixed(1)}" y="${(H - bh).toFixed(1)}" width="${(bw - 12).toFixed(1)}" height="${bh.toFixed(1)}" rx="3"/>` +
+      `<text x="${(x + (bw - 12) / 2).toFixed(1)}" y="${(H - bh - 4).toFixed(1)}" text-anchor="middle">${g ? (g / G_PER_LB).toFixed(1) : ''}</text>` +
+      `<text x="${(x + (bw - 12) / 2).toFixed(1)}" y="${H + 14}" text-anchor="middle">${wk === 0 ? 'now' : '-' + wk + 'w'}</text>`; }).join('') + '</svg><div class="sub">Pounds of seed per week</div>';
+}
+
+function render() {
+  const b = $('#banners'); b.innerHTML = '';
+  if (state.err) b.innerHTML = `<div class="banner err"><b>Could not load batches/varieties.</b> ${esc(state.err)}<br>Check the Growth Controls API key in Settings.</div>`;
+  if (state.invErr) b.innerHTML += `<div class="banner err"><b>Could not read seed_inventory.</b> ${esc(state.invErr)}<br>Check the Growth Recipes API key in Settings.</div>`;
+  if (state.needCols) b.innerHTML += `<div class="banner"><b>Two columns are missing in seed_inventory:</b> add <code>counted_grams</code> (Decimal) and <code>counted_at</code> (DateTime) in AppSheet, save, then press Refresh.</div>`;
+  state.rows = state.err ? [] : compute();
+  const rows = state.rows, cnt = s => rows.filter(r => r.status === s).length;
+  const onHandG = rows.reduce((a, r) => a + Math.max(0, r.onHand || 0), 0);
+  $('#cards').innerHTML =
+    `<div class="card"><div class="n">${rows.length}</div><div class="l">Varieties tracked</div></div>` +
+    `<div class="card low"><div class="n">${cnt('LOW') + cnt('OUT')}</div><div class="l">Low / out — order now</div></div>` +
+    `<div class="card soon"><div class="n">${cnt('SOON')}</div><div class="l">Run out within ${SOON_DAYS} days</div></div>` +
+    `<div class="card"><div class="n">${cnt('SETUP')}</div><div class="l">Need a count</div></div>` +
+    `<div class="card"><div class="n">${(onHandG / G_PER_LB).toFixed(1)}</div><div class="l">Total lb on hand</div></div>`;
+  $('#chart').innerHTML = chart(rows);
+  $('#stamp').textContent = state.loadedAt ? 'Updated ' + state.loadedAt.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'Not loaded yet';
+  drawRows();
+}
+function drawRows() {
+  const q = $('#q').value.trim().toLowerCase(), only = $('#onlyLow').checked;
+  const list = state.rows.filter(r => (!q || r.name.toLowerCase().includes(q)) && (!only || ['LOW', 'OUT', 'SOON'].includes(r.status)));
+  const labels = { LOW: 'LOW', OUT: 'OUT', SOON: 'RUNS OUT SOON', OK: 'OK', SETUP: 'COUNT NEEDED' };
+  $('#rows').innerHTML = list.length ? list.map(r => {
+    const setup = r.status === 'SETUP';
+    return `<tr>
+      <td><b>${esc(r.name)}</b><div class="sub">${r.sd > 0 ? r.sd + ' g/tray' : '<span class="warn">No seed density set</span>'}</div></td>
+      <td class="r">${setup ? '<span class="sub">—</span>' : `<b>${gFmt(r.onHand)}</b><div class="sub">${lbFmt(r.onHand)}</div>`}</td>
+      <td>${setup ? '' : `<div class="bar ${r.status}"><i style="width:${Math.max(0, Math.min(100, r.pct)).toFixed(0)}%"></i></div><div class="sub">${r.pct.toFixed(0)}% of ${lbFmt(r.lot)}</div>`}</td>
+      <td class="r">${r.trays === null ? '—' : Math.floor(r.trays).toLocaleString('en-US')}</td>
+      <td class="r">${gFmt(r.used7)}<div class="sub">${lbFmt(r.used7)}</div></td>
+      <td>${spark(r.weeks)}</td>
+      <td>${setup ? '—' : r.runOut ? `${fmtD(r.runOut)}<div class="sub">${esc(r.runNote)}</div>` : `<span class="sub">${esc(r.runNote || '—')}</span>`}</td>
+      <td><span class="chip ${r.status}">${labels[r.status]}</span></td>
+      <td style="white-space:nowrap">${setup ? `<button class="sm primary" data-a="setup" data-id="${esc(r.id)}">Enter count</button>` :
+        `<button class="sm primary" data-a="restock" data-id="${esc(r.id)}">+ Add seed</button> <button class="sm" data-a="recount" data-id="${esc(r.id)}">Recount</button>`}</td>
+    </tr>`; }).join('') : '<tr><td colspan="9" class="sub">Nothing to show.</td></tr>';
+}
+
+// ---- add / count dialogs ----
+let act = null;
+function openAct(kind, id) {
+  const r = state.rows.find(x => x.id === id); if (!r) return;
+  if (state.needCols) { alert('Add the counted_grams and counted_at columns to seed_inventory in AppSheet first (see the yellow banner).'); return; }
+  act = { kind, r };
+  const t = { setup: ['Enter count', 'Weigh everything you have of this variety right now (all bags, opened and unopened).', 'Total on hand now'],
+              restock: ['Add seed', 'A new bag arrived. This adds to the amount on hand and logs a new bag in seed_inventory.', 'Weight of the new bag'],
+              recount: ['Recount', 'Enter the total you actually have right now. Usage is counted from this moment on.', 'Total on hand now'] }[kind];
+  $('#aTitle').textContent = `${t[0]} — ${r.name}`; $('#aSub').textContent = t[1]; $('#aLabel').textContent = t[2];
+  $('#aAmt').value = ''; $('#aNote').value = ''; $('#aErr').textContent = ''; $('#aPrev').textContent = '';
+  $('#aNoteW').style.display = kind === 'restock' ? '' : 'none';
+  $('#dAct').showModal(); $('#aAmt').focus();
+}
+function actGrams() { const n = num($('#aAmt').value); return $('#aUnit').value === 'lb' ? n * G_PER_LB : n; }
+async function saveAct() {
+  const g = actGrams(); if (!(g > 0)) { $('#aErr').textContent = 'Enter an amount greater than zero.'; return; }
+  const { kind, r } = act, now = new Date(), btn = $('#aGo'); btn.disabled = true; $('#aErr').textContent = '';
+  const gr = Math.round(g * 100) / 100, lb = Math.round(g / G_PER_LB * 1000) / 1000;
+  const newLot = (extra) => Object.assign({ id: uid(), variety_id: r.id, date_recieved: fmtDate(now), quantity: 1, lbs_unit: lb, seed_density: r.sd || '' }, extra);
+  try {
+    let warn = '';
+    if (kind === 'setup') {
+      if (r.primary) await api('GR', 'seed_inventory', 'Edit', [{ id: r.primary.id, counted_grams: gr, counted_at: fmtDT(now) }]);
+      else await api('GR', 'seed_inventory', 'Add', [newLot({ status: 'In Use', counted_grams: gr, counted_at: fmtDT(now) })]);
+    } else if (kind === 'recount') {
+      await api('GR', 'seed_inventory', 'Edit', [{ id: r.countRow.id, counted_grams: gr, counted_at: fmtDT(now) }]);
+    } else {
+      // 1) raise the running count (what the dashboard's math uses)
+      await api('GR', 'seed_inventory', 'Edit', [{ id: r.countRow.id, counted_grams: Math.round((num(r.countRow.counted_grams) + g) * 100) / 100 }]);
+      // 2) log the new bag as its own row (purchase history / bag size for the 25% rule)
+      try { await api('GR', 'seed_inventory', 'Add', [newLot({ status: 'On Shelf', 'lot#': $('#aNote').value.trim() })]); }
+      catch (e) { warn = 'Amount was added, but the new-bag row could not be created: ' + e.message; }
+    }
+    $('#dAct').close(); await loadInv();
+    if (warn) alert(warn);
+  } catch (e) { $('#aErr').textContent = 'Save failed: ' + e.message; }
+  btn.disabled = false;
+}
+
+// ---- report ----
+let reportText = '', reportCsv = '';
+function buildReport() {
+  const rows = state.rows.filter(r => r.status !== 'SETUP'), now = new Date();
+  const weekStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay());
+  const order = rows.filter(r => ['OUT', 'LOW', 'SOON'].includes(r.status));
+  const totUsed = state.rows.reduce((a, r) => a + r.used7, 0), totNeed = state.rows.reduce((a, r) => a + r.need28, 0);
+  const tr = r => `<tr><td>${esc(r.name)}</td><td class="r">${gFmt(r.onHand)}<br><span class="sub">${lbFmt(r.onHand)}</span></td><td class="r">${r.pct.toFixed(0)}%</td><td class="r">${r.trays === null ? '—' : Math.floor(r.trays)}</td><td class="r">${gFmt(r.used7)}</td><td class="r">${gFmt(r.need28)}</td><td>${r.runOut ? fmtD(r.runOut) : '—'}</td><td><span class="chip ${r.status}">${r.status}</span></td></tr>`;
+  const head = '<thead><tr><th>Variety</th><th class="r">On hand</th><th class="r">% of bag</th><th class="r">Trays left</th><th class="r">Used 7d</th><th class="r">Planned 28d</th><th>Run-out</th><th>Status</th></tr></thead>';
+  const needCount = state.rows.filter(r => r.status === 'SETUP');
+  $('#report').innerHTML = `<h2>Seed inventory report</h2><div class="sub">Generated ${now.toLocaleString('en-US')} · week of ${fmtD(weekStart)}</div>
+    <p><b>${order.length}</b> variet${order.length === 1 ? 'y needs' : 'ies need'} attention. Seed used in the last 7 days: <b>${gFmt(totUsed)}</b> (${lbFmt(totUsed)}). Seed planned for the next 28 days: <b>${gFmt(totNeed)}</b> (${lbFmt(totNeed)}).</p>
+    <h3>Order / watch list</h3>${order.length ? `<table>${head}<tbody>${order.map(tr).join('')}</tbody></table>` : '<p>Nothing is low.</p>'}
+    <h3>All counted varieties</h3><table>${head}<tbody>${rows.map(tr).join('')}</tbody></table>
+    ${needCount.length ? `<p class="sub">No count yet: ${needCount.map(r => esc(r.name)).join(', ')}</p>` : ''}`;
+  const L = r => `${r.name}: ${gFmt(r.onHand)} (${lbFmt(r.onHand)}), ${r.pct.toFixed(0)}% of bag, ~${r.trays === null ? '?' : Math.floor(r.trays)} trays, used 7d ${gFmt(r.used7)}, run-out ${r.runOut ? fmtD(r.runOut) : 'n/a'} [${r.status}]`;
+  reportText = `HRH SEED INVENTORY — week of ${fmtD(weekStart)}\nNeeds attention (${order.length}):\n` + (order.map(L).join('\n') || 'None') + `\n\nAll counted varieties:\n` + rows.map(L).join('\n');
+  reportCsv = 'Variety,On hand (g),On hand (lb),% of bag,Trays left,Used last 7d (g),Planned next 28d (g),Run-out,Status\n' +
+    rows.map(r => [`"${r.name.replace(/"/g, '""')}"`, r.onHand.toFixed(0), (r.onHand / G_PER_LB).toFixed(2), r.pct.toFixed(0), r.trays === null ? '' : Math.floor(r.trays), r.used7.toFixed(0), r.need28.toFixed(0), r.runOut ? fmtD(r.runOut) : '', r.status].join(',')).join('\n');
+  $('#dReport').showModal();
+}
+
+// ---- settings & wiring ----
+function openSettings() { $('#sKeyGC').value = key('GC'); $('#sKeyGR').value = key('GR'); $('#sAppGC').value = appId('GC'); $('#sAppGR').value = appId('GR'); $('#dSettings').showModal(); }
+$('#sSave').onclick = () => {
+  store.set('hrh_seed_key_GC', $('#sKeyGC').value.trim()); store.set('hrh_seed_key_GR', $('#sKeyGR').value.trim());
+  store.set('hrh_seed_app_GC', $('#sAppGC').value.trim() || APPS.GC); store.set('hrh_seed_app_GR', $('#sAppGR').value.trim() || APPS.GR);
+  $('#dSettings').close(); load();
+};
+$('#sCancel').onclick = () => $('#dSettings').close();
+$('#bSettings').onclick = openSettings;
+$('#bRefresh').onclick = load;
+$('#bReport').onclick = () => { if (!state.rows.length) return; buildReport(); };
+$('#q').oninput = drawRows; $('#onlyLow').onchange = drawRows; $('#showInactive').onchange = render;
+$('#rows').onclick = e => { const b = e.target.closest('button[data-a]'); if (b) openAct(b.dataset.a, b.dataset.id); };
+$('#aCancel').onclick = () => $('#dAct').close(); $('#aGo').onclick = saveAct;
+const prev = () => { const g = actGrams(); $('#aPrev').textContent = g > 0 ? `= ${gFmt(g)} = ${lbFmt(g)}` : ''; };
+$('#aAmt').oninput = prev; $('#aUnit').onchange = prev;
+$('#aAmt').onkeydown = e => { if (e.key === 'Enter') saveAct(); };
+$('#rClose').onclick = () => $('#dReport').close();
+$('#rPrint').onclick = () => window.print();
+$('#rCopy').onclick = async () => { try { await navigator.clipboard.writeText(reportText); $('#rCopy').textContent = 'Copied!'; setTimeout(() => $('#rCopy').textContent = 'Copy as text', 1500); } catch (e) { alert('Copy failed — select the text manually.'); } };
+$('#rCsv').onclick = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([reportCsv], { type: 'text/csv' })); a.download = `seed-inventory-${new Date().toISOString().slice(0, 10)}.csv`; a.click(); };
+load();
+setInterval(() => { if (key('GC') && key('GR') && !document.hidden) load(); }, 30 * 60 * 1000);
+})();
+</script>
+</body>
+</html>

@@ -83,12 +83,13 @@ dialog h2{margin:0 0 10px;font-size:17px}
 
 <dialog id="dAct">
   <h2 id="aTitle"></h2><div class="sub" id="aSub"></div>
+  <div class="f"><label id="aWhenL">Date of count</label><input id="aWhen" type="datetime-local"></div>
   <div class="row">
     <div class="f"><label id="aLabel">Amount</label><input id="aAmt" type="number" min="0" step="any" inputmode="decimal"></div>
     <div class="f"><label>Unit</label><select id="aUnit"><option value="lb">pounds</option><option value="g">grams</option></select></div>
   </div>
   <div class="sub" id="aPrev"></div>
-  <div class="f" id="aNoteW"><label>Lot # (optional)</label><input id="aNote" placeholder="From the seed bag"></div>
+  <div class="f" id="aNoteW"><label>Lot # or note (optional)</label><input id="aNote" placeholder="From the seed bag"></div>
   <div class="warn" id="aErr"></div>
   <div class="acts"><button id="aCancel">Cancel</button><button id="aGo" class="primary">Save</button></div>
 </dialog>
@@ -136,7 +137,7 @@ async function api(which, table, action, rows) {
   return Array.isArray(j) ? j : (j.Rows || []);
 }
 
-const state = { varieties: [], batches: [], inv: [], needCols: false, rows: [], loadedAt: null, err: null, invErr: null };
+const state = { varieties: [], batches: [], inv: [], counts: [], countsMissing: false, rows: [], loadedAt: null, err: null, invErr: null };
 
 async function load() {
   if (!key('GC') || !key('GR')) { openSettings(); return; }
@@ -152,7 +153,8 @@ async function loadInv() {
   state.invErr = null;
   try { state.inv = await api('GR', 'seed_inventory', 'Find'); }
   catch (e) { state.inv = []; state.invErr = e.message; }
-  state.needCols = state.inv.length > 0 && !('counted_grams' in state.inv[0] && 'counted_at' in state.inv[0]);
+  try { state.counts = await api('GR', 'seed_counts', 'Find'); state.countsMissing = false; }
+  catch (e) { state.counts = []; state.countsMissing = true; }
   state.loadedAt = new Date();
   render();
 }
@@ -175,6 +177,7 @@ function compute() {
     }
   });
   const lotsBy = {}; state.inv.forEach(l => (lotsBy[l.variety_id] = lotsBy[l.variety_id] || []).push(l));
+  const countsBy = {}; state.counts.forEach(c => (countsBy[c.variety_id] = countsBy[c.variety_id] || []).push(c));
 
   const rows = vars.map(v => {
     const o = byV[v.id], lots = lotsBy[v.id] || [], sd = num(v.sd);
@@ -185,20 +188,23 @@ function compute() {
     const fut = o.future.sort((a, b) => a.date - b.date);
     const need28 = fut.filter(f => f.date - today <= 28 * DAY).reduce((a, f) => a + f.g, 0);
     const futTotal = fut.reduce((a, f) => a + f.g, 0);
-    // latest count (counted_grams = everything on the shelf at counted_at; additions bump it)
-    const counted = lots.filter(l => pd(l.counted_at) && has(l.counted_grams)).sort((a, b) => pd(b.counted_at) - pd(a.counted_at));
+    // every count is its own dated entry in seed_counts (counted_grams = everything on the shelf at counted_at); the NEWEST entry is the baseline
+    const counted = (countsBy[v.id] || []).filter(l => pd(l.counted_at) && has(l.counted_grams)).sort((a, b) => pd(b.counted_at) - pd(a.counted_at));
     const countRow = counted[0] || null;
-    // row to hold a first count: the "In Use" lot, else newest On Shelf lot
     const act = lots.filter(l => ACTIVE.includes(l.status));
     const lotDate = l => pd(l.date_recieved) || pd(l['lot # Start']) || new Date(0);
-    const primary = act.filter(l => l.status === 'In Use')[0] || act.sort((a, b) => lotDate(b) - lotDate(a))[0] || null;
     const refLot = act.filter(l => num(l.total_lbs) > 0).sort((a, b) => lotDate(b) - lotDate(a))[0] || null;
-    const r = { id: v.id, name: v.name, sd, used7, used28, weeks, need28, countRow, primary, status: 'SETUP', onHand: null, lot: 0, pct: null, trays: null, runOut: null, runNote: '' };
+    const maxCount = counted.reduce((m, l) => Math.max(m, num(l.counted_grams)), 0);
+    const lastRestock = counted.filter(c => c.entry_type === 'restock' && num(c.added_grams) > 0)[0] || null;
+    let bagG = refLot ? num(refLot.total_lbs) * G_PER_LB : maxCount;       // size of the most recent bag
+    if (lastRestock && (!refLot || pd(lastRestock.counted_at) >= lotDate(refLot))) bagG = num(lastRestock.added_grams);
+    const r = { id: v.id, name: v.name, sd, used7, used28, weeks, need28, countRow, status: 'SETUP', onHand: null, lot: 0, pct: null, trays: null, runOut: null, runNote: '', baseAt: null, onHandAt: null };
     if (countRow) {
       const baseAt = pd(countRow.counted_at), base = num(countRow.counted_grams);
-      const used = o.planted.filter(p => p.at >= baseAt).reduce((a, p) => a + p.g, 0);
-      r.onHand = base - used;
-      r.lot = refLot ? num(refLot.total_lbs) * G_PER_LB : base;
+      const usedTo = d => o.planted.filter(p => p.at >= baseAt && p.at <= d).reduce((a, p) => a + p.g, 0);
+      r.baseAt = baseAt; r.onHandAt = d => base - usedTo(d);
+      r.onHand = base - usedTo(now);
+      r.lot = bagG;
       r.pct = r.lot > 0 ? r.onHand / r.lot * 100 : 0;
       r.trays = sd > 0 ? Math.max(0, r.onHand) / sd : null;
       if (r.onHand <= 0) { r.runOut = today; r.runNote = 'out now'; }
@@ -242,7 +248,7 @@ function render() {
   const b = $('#banners'); b.innerHTML = '';
   if (state.err) b.innerHTML = `<div class="banner err"><b>Could not load batches/varieties.</b> ${esc(state.err)}<br>Check the Growth Controls API key in Settings.</div>`;
   if (state.invErr) b.innerHTML += `<div class="banner err"><b>Could not read seed_inventory.</b> ${esc(state.invErr)}<br>Check the Growth Recipes API key in Settings.</div>`;
-  if (state.needCols) b.innerHTML += `<div class="banner"><b>Two columns are missing in seed_inventory:</b> add <code>counted_grams</code> (Decimal) and <code>counted_at</code> (DateTime) in AppSheet, save, then press Refresh.</div>`;
+  if (state.countsMissing) b.innerHTML += `<div class="banner"><b>The seed_counts table is missing in the Growth Recipes app.</b> Add it (see README: 8 column headers), save, then press Refresh. Counts can't be saved until then.</div>`;
   state.rows = state.err ? [] : compute();
   const rows = state.rows, cnt = s => rows.filter(r => r.status === s).length;
   const onHandG = rows.reduce((a, r) => a + Math.max(0, r.onHand || 0), 0);
@@ -264,7 +270,7 @@ function drawRows() {
     const setup = r.status === 'SETUP';
     return `<tr>
       <td><b>${esc(r.name)}</b><div class="sub">${r.sd > 0 ? r.sd + ' g/tray' : '<span class="warn">No seed density set</span>'}</div></td>
-      <td class="r">${setup ? '<span class="sub">—</span>' : `<b>${gFmt(r.onHand)}</b><div class="sub">${lbFmt(r.onHand)}</div>`}</td>
+      <td class="r">${setup ? '<span class="sub">—</span>' : `<b>${gFmt(r.onHand)}</b><div class="sub">${lbFmt(r.onHand)}</div><div class="sub">counted ${fmtD(r.baseAt)}</div>`}</td>
       <td>${setup ? '' : `<div class="bar ${r.status}"><i style="width:${Math.max(0, Math.min(100, r.pct)).toFixed(0)}%"></i></div><div class="sub">${r.pct.toFixed(0)}% of ${lbFmt(r.lot)}</div>`}</td>
       <td class="r">${r.trays === null ? '—' : Math.floor(r.trays).toLocaleString('en-US')}</td>
       <td class="r">${gFmt(r.used7)}<div class="sub">${lbFmt(r.used7)}</div></td>
@@ -272,46 +278,43 @@ function drawRows() {
       <td>${setup ? '—' : r.runOut ? `${fmtD(r.runOut)}<div class="sub">${esc(r.runNote)}</div>` : `<span class="sub">${esc(r.runNote || '—')}</span>`}</td>
       <td><span class="chip ${r.status}">${labels[r.status]}</span></td>
       <td style="white-space:nowrap">${setup ? `<button class="sm primary" data-a="setup" data-id="${esc(r.id)}">Enter count</button>` :
-        `<button class="sm primary" data-a="restock" data-id="${esc(r.id)}">+ Add seed</button> <button class="sm" data-a="recount" data-id="${esc(r.id)}">Recount</button>`}</td>
+        `<button class="sm primary" data-a="restock" data-id="${esc(r.id)}">+ Add seed</button> <button class="sm" data-a="recount" data-id="${esc(r.id)}">Enter count</button>`}</td>
     </tr>`; }).join('') : '<tr><td colspan="9" class="sub">Nothing to show.</td></tr>';
 }
 
 // ---- add / count dialogs ----
 let act = null;
+const localNow = () => { const d = new Date(); return `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())}T${p2(d.getHours())}:${p2(d.getMinutes())}`; };
 function openAct(kind, id) {
   const r = state.rows.find(x => x.id === id); if (!r) return;
-  if (state.needCols) { alert('Add the counted_grams and counted_at columns to seed_inventory in AppSheet first (see the yellow banner).'); return; }
+  if (state.countsMissing) { alert('Add the seed_counts table in AppSheet first (see the yellow banner and README).'); return; }
   act = { kind, r };
-  const t = { setup: ['Enter count', 'Weigh everything you have of this variety right now (all bags, opened and unopened).', 'Total on hand now'],
-              restock: ['Add seed', 'A new bag arrived. This adds to the amount on hand and logs a new bag in seed_inventory.', 'Weight of the new bag'],
-              recount: ['Recount', 'Enter the total you actually have right now. Usage is counted from this moment on.', 'Total on hand now'] }[kind];
-  $('#aTitle').textContent = `${t[0]} — ${r.name}`; $('#aSub').textContent = t[1]; $('#aLabel').textContent = t[2];
+  const t = { setup: ['Enter count', 'Weigh everything you have of this variety (all bags, opened and unopened). The dashboard uses your newest count.', 'Total on hand', 'Date & time of count'],
+              restock: ['Add seed', 'A new bag arrived. This adds its weight to the amount on hand. (Log the purchase itself in AppSheet as usual.)', 'Weight of the new bag', 'Date & time the bag arrived'],
+              recount: ['Enter count', 'Weigh everything you have of this variety (all bags, opened and unopened). The dashboard uses your newest count.', 'Total on hand', 'Date & time of count'] }[kind];
+  $('#aTitle').textContent = `${t[0]} — ${r.name}`; $('#aSub').textContent = t[1]; $('#aLabel').textContent = t[2]; $('#aWhenL').textContent = t[3];
   $('#aAmt').value = ''; $('#aNote').value = ''; $('#aErr').textContent = ''; $('#aPrev').textContent = '';
+  $('#aWhen').value = localNow(); $('#aWhen').max = localNow();
   $('#aNoteW').style.display = kind === 'restock' ? '' : 'none';
   $('#dAct').showModal(); $('#aAmt').focus();
 }
 function actGrams() { const n = num($('#aAmt').value); return $('#aUnit').value === 'lb' ? n * G_PER_LB : n; }
 async function saveAct() {
   const g = actGrams(); if (!(g > 0)) { $('#aErr').textContent = 'Enter an amount greater than zero.'; return; }
-  const { kind, r } = act, now = new Date(), btn = $('#aGo'); btn.disabled = true; $('#aErr').textContent = '';
-  const gr = Math.round(g * 100) / 100, lb = Math.round(g / G_PER_LB * 1000) / 1000;
-  const newLot = (extra) => Object.assign({ id: uid(), variety_id: r.id, date_recieved: fmtDate(now), quantity: 1, lbs_unit: lb, seed_density: r.sd || '' }, extra);
+  const when = new Date($('#aWhen').value);
+  if (isNaN(when)) { $('#aErr').textContent = 'Enter the date of the count.'; return; }
+  if (when.getTime() > Date.now() + 60000) { $('#aErr').textContent = 'The date can\'t be in the future.'; return; }
+  const { kind, r } = act, btn = $('#aGo'); $('#aErr').textContent = '';
+  if (kind === 'restock' && r.baseAt && when < r.baseAt) { $('#aErr').textContent = `That bag arrived before your last count (${fmtD(r.baseAt)}), so it is already included. Use a date after the last count, or enter a fresh count instead.`; return; }
+  if (kind !== 'restock' && r.baseAt && when < r.baseAt && !confirm(`You already have a newer count (${fmtD(r.baseAt)}). This older entry will be saved but won't change the numbers. Save it anyway?`)) return;
+  btn.disabled = true;
   try {
-    let warn = '';
-    if (kind === 'setup') {
-      if (r.primary) await api('GR', 'seed_inventory', 'Edit', [{ id: r.primary.id, counted_grams: gr, counted_at: fmtDT(now) }]);
-      else await api('GR', 'seed_inventory', 'Add', [newLot({ status: 'In Use', counted_grams: gr, counted_at: fmtDT(now) })]);
-    } else if (kind === 'recount') {
-      await api('GR', 'seed_inventory', 'Edit', [{ id: r.countRow.id, counted_grams: gr, counted_at: fmtDT(now) }]);
-    } else {
-      // 1) raise the running count (what the dashboard's math uses)
-      await api('GR', 'seed_inventory', 'Edit', [{ id: r.countRow.id, counted_grams: Math.round((num(r.countRow.counted_grams) + g) * 100) / 100 }]);
-      // 2) log the new bag as its own row (purchase history / bag size for the 25% rule)
-      try { await api('GR', 'seed_inventory', 'Add', [newLot({ status: 'On Shelf', 'lot#': $('#aNote').value.trim() })]); }
-      catch (e) { warn = 'Amount was added, but the new-bag row could not be created: ' + e.message; }
-    }
+    const gr = Math.round(g * 100) / 100;
+    const row = { id: uid(), variety_id: r.id, variety_name: r.name, counted_at: fmtDT(when) };
+    if (kind === 'restock') Object.assign(row, { counted_grams: Math.round((Math.max(0, r.onHandAt(when)) + g) * 100) / 100, added_grams: gr, entry_type: 'restock', note: $('#aNote').value.trim() });
+    else Object.assign(row, { counted_grams: gr, entry_type: 'count' });
+    await api('GR', 'seed_counts', 'Add', [row]);
     $('#dAct').close(); await loadInv();
-    if (warn) alert(warn);
   } catch (e) { $('#aErr').textContent = 'Save failed: ' + e.message; }
   btn.disabled = false;
 }

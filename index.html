@@ -86,7 +86,7 @@ a.btn.primary{background:var(--btn);color:var(--btnink);border-color:var(--btn)}
       <button class="sm" id="lExport">Export links</button><button class="sm" id="lImport">Import links</button>
       <span class="sub" id="lflash"></span>
     </div>
-    <p class="sub">Add up to three places to buy each variety (supplier name + web link). When a variety is low, out, or runs out soon, order buttons appear next to it on the Inventory tab. Links save automatically in this browser only; use Export / Import to copy them to another device.</p>
+    <p class="sub">Add up to three places to buy each variety (supplier name + web link). When a variety is low, out, or runs out soon, order buttons appear next to it on the Inventory tab. Primary links are pre-filled from your most recent True Leaf Market order (paste a different web address to change one). Links save automatically in this browser only; use Export / Import to copy them to another device.</p>
     <div class="tw"><table>
       <thead id="lHead"><tr><th data-sort="name">Variety<span class="arr"></span></th><th data-sort="status">Status<span class="arr"></span></th><th>Primary choice</th><th>Secondary choice</th><th>Third choice</th></tr></thead>
       <tbody id="lrows"></tbody>
@@ -384,7 +384,42 @@ async function saveAct() {
 // ---- purchase links (saved in this browser) ----
 const LK = 'hrh_seed_links', CHOICES = ['Primary', 'Secondary', 'Third'];
 const STATUS_LABELS = { LOW: 'LOW', OUT: 'OUT', SOON: 'RUNS OUT SOON', OK: 'OK', SETUP: 'COUNT NEEDED' };
-const getLinks = () => { try { return JSON.parse(store.get(LK) || '{}') || {}; } catch (e) { return {}; } };
+// Default PRIMARY purchase link per variety = the product from the most recent True Leaf Market order confirmation (checked 2026-10-12).
+// Saved links on the Purchase links tab override these. Varieties with no True Leaf purchase on file are left blank.
+const TLM = 'https://trueleafmarket.com/products/';
+const DEFAULT_PRIMARY = {
+  'Wasabi': { label: 'True Leaf Market – Mustard - Wasabi 5 lb (bought 2026-07-15)', path: 'mustard-wasabi-microgreens-seeds?variant=46592716360' },
+  'Cilantro': { label: 'True Leaf Market – Cilantro - Leisure Splits 25 lb (bought 2026-08-11)', path: 'cilantro-seeds-leisure-splits-microgreens-seeds?variant=18650820280435' },
+  'Cantaloupe': { label: 'True Leaf Market – Cantaloupe 25 lb (bought 2026-04-13)', path: 'cantaloupe-hales-best-microgreens?variant=32157788110963' },
+  'Triton Radish': { label: 'True Leaf Market – Radish - Triton Purple 25 lb (bought 2026-08-04)', path: 'radish-sprouting-triton-purple-seeds?variant=39110766216' },
+  'Rambo Radish': { label: 'True Leaf Market – Radish - Purple 25 lb (bought 2026-08-24)', path: 'purple-radish-microgreens-seeds?variant=31597779746931' },
+  'Red Vein Sorrel': { label: 'True Leaf Market – Sorrel - Red Veined 1 lb (bought 2026-09-07)', path: 'sorrel-red-veined-microgreens-seeds?variant=4147236798505' },
+  'Wheatgrass': { label: 'True Leaf Market – Wheat - Hard Red Spring (Organic) 25 lb (bought 2026-09-19)', path: 'wheat-hard-red-spring-organic-sprouting-seeds?variant=46446778056' },
+  'Kale': { label: 'True Leaf Market – Kale - Vates Blue Scotch Curled 25 lb (bought 2026-06-02)', path: 'kale-vates-blue-scotch-curled-microgreens-seeds?variant=46591953800' },
+  'Green Shiso': { label: 'True Leaf Market – Shiso (Perilla) - Green 4 oz (bought 2026-08-11)', path: 'shiso-seeds-perilla-green?variant=16444598321267' },
+  'Shiso': { label: 'True Leaf Market – Shiso (Perilla) - Purple 4 oz (bought 2026-03-18)', path: 'shiso-seeds-perilla-purple' },
+  'Green Mustard': { label: 'True Leaf Market – Green Mustard 1 lb (bought 2026-09-28)', path: 'green-mustard-microgreens-seeds?variant=31865074090099' },
+  'Beets': { label: 'True Leaf Market – Beet - Detroit Dark Red 25 lb (bought 2026-09-07)', path: 'beet-detroit-dark-red-microgreens-seeds?variant=45187194568' },
+  'Basil': { label: 'True Leaf Market – Basil - Italian Large Leaf 5 lb (bought 2026-09-11)', path: 'basil-seeds-italian-large-leaf-microgreens-seeds?variant=29360995205235' },
+  'Pea Shoots': { label: 'True Leaf Market – Pea - Speckled 25 lb (bought 2026-10-07)', path: 'pea-sprouting-speckled-arivka-microgreens?variant=32206511603827' },
+  'Tendril Pea': { label: 'True Leaf Market – Pea - Afila Tendril 25 lb (bought 2026-09-30)', path: 'pea-tendril-microgreens-seeds-1?variant=31961195741299' },
+  'Red Cabbage': { label: 'True Leaf Market – Cabbage - Red Acre 25 lb (bought 2026-04-15)', path: 'cabbage-red-acre-microgreens-seeds?variant=46365942984' },
+  'Red Amaranth': { label: 'True Leaf Market – Amaranth - Red Garnet 1 lb (bought 2026-08-11)', path: 'amaranth-sprouting-red-garnet-seeds-conventional?variant=38494655880' },
+  'Broccoli': { label: 'True Leaf Market – Broccoli - Microgreens Seed Mix 5 lb (bought 2026-09-18)', path: 'broccoli-microgreens-seed-mix?variant=31772083191923' },
+  'Leeks': { label: 'True Leaf Market – Leek - Carentan 5 lb (bought 2026-08-04)', path: 'leek-seeds-carentan-microgreens?variant=32161741308019' },
+  'Arugula': { label: 'True Leaf Market – Arugula - Astro 25 lb (bought 2026-07-15)', path: 'arugula-seeds-astro-microgreens-seeds?variant=39820039946355' }
+};
+const storedLinks = () => { try { return JSON.parse(store.get(LK) || '{}') || {}; } catch (e) { return {}; } };
+// stored links plus defaults: a variety with no saved Primary link gets its last-bought True Leaf Market product
+const getLinks = () => {
+  const L = storedLinks();
+  (state.rows || []).forEach(r => {
+    const d = DEFAULT_PRIMARY[r.name]; if (!d) return;
+    const arr = L[r.id] ? L[r.id].slice() : [{}, {}, {}];
+    if (!(arr[0] && arr[0].url)) { arr[0] = { label: d.label, url: TLM + d.path, dflt: true }; L[r.id] = arr; }
+  });
+  return L;
+};
 const setLinks = o => store.set(LK, JSON.stringify(o));
 function normUrl(u) { // '' = empty, null = not a valid web link, else cleaned http(s) URL
   u = String(u || '').trim(); if (!u) return '';
@@ -422,20 +457,20 @@ $('#lrows').onchange = e => {
   const url = normUrl(urlEl.value);
   if (url === null) { urlEl.style.borderColor = 'var(--red)'; flash('That is not a valid web link (it must start with http or https).'); return; }
   urlEl.style.borderColor = ''; if (url) urlEl.value = url;
-  const L = getLinks(), arr = L[el.dataset.v] || [{}, {}, {}];
+  const L = storedLinks(), arr = L[el.dataset.v] || [{}, {}, {}];
   arr[+el.dataset.i] = { label, url }; L[el.dataset.v] = arr; setLinks(L);
   const old = td.querySelector('a[data-open]'); if (old) old.remove();
   if (url) { const a = document.createElement('a'); a.className = 'btn'; a.dataset.open = '1'; a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.textContent = 'Open'; td.appendChild(a); }
   flash('Saved'); drawRows();
 };
 $('#lExport').onclick = async () => {
-  const txt = JSON.stringify(getLinks());
+  const txt = JSON.stringify(storedLinks());
   try { await navigator.clipboard.writeText(txt); flash('Copied. Paste it into Import on the other device.'); } catch (e) { prompt('Copy this text:', txt); }
 };
 $('#lImport').onclick = () => {
   const t = prompt('Paste the exported links text here:'); if (!t) return;
   try {
-    const inc = JSON.parse(t), L = getLinks(); let n = 0;
+    const inc = JSON.parse(t), L = storedLinks(); let n = 0;
     Object.keys(inc).forEach(v => { if (!Array.isArray(inc[v])) return; const arr = [0, 1, 2].map(i => { const x = inc[v][i] || {}, u = normUrl(x.url); return u ? { label: String(x.label || '').slice(0, 60), url: u } : {}; }); if (arr.some(x => x.url)) { L[v] = arr; n++; } });
     setLinks(L); drawLinks(); drawRows(); flash(`Imported links for ${n} variet${n === 1 ? 'y' : 'ies'}.`);
   } catch (e) { alert('That text is not valid exported links.'); }

@@ -14,10 +14,8 @@ Usage:
   python3 scripts/check_seeds.py            # normal run
   python3 scripts/check_seeds.py --dry-run  # print results, no push, no log write
 
-Note: The dashboard marks a variety SOON when run-out is within 14 days.
-This script's Bark alert threshold is 21 days (per the owner's requirement),
-so varieties with 15–21 days left show OK on the dashboard but still trigger
-an alert here.
+Alert thresholds match the dashboard: LOW = below 25% of bag, SOON = run-out
+within 14 days. Varieties already showing an Ordered lot are suppressed.
 """
 
 import argparse
@@ -38,7 +36,7 @@ DEFAULT_GR_APP_ID = 'fe7f55b7-a021-4f49-a9cb-c5528e8de84e'   # Growth Recipes
 G_PER_LB          = 453.592
 LOW_PCT            = 25     # % of bag → LOW  (matches dashboard)
 SOON_DAYS          = 14     # days to run-out → SOON status chip (matches dashboard)
-ALERT_DAYS         = 21     # days to run-out → Bark alert (owner-specified, wider than SOON)
+ALERT_DAYS         = 14     # days to run-out → Bark alert (matches dashboard SOON threshold)
 ACTIVE_STATUSES    = frozenset({'In Use', 'On Shelf'})
 APPSHEET_BASE      = 'https://api.appsheet.com/api/v2/apps'
 

@@ -17,8 +17,7 @@ No extra packages needed — it uses only Python's built-in standard library.
 A seed triggers an alert if **either** of these is true *and* it has no "Ordered" lot already on its way:
 
 - On hand is **below 25 %** of the most-recent bag's size (LOW / OUT on the dashboard)
-- Estimated run-out is **within 21 days** (the dashboard chip changes to SOON at 14 days;
-  this script widens the window to 21 days so you have more lead time to order)
+- Estimated run-out is **within 14 days** (matches the dashboard's SOON threshold)
 
 ### One-time setup on the Pi
 

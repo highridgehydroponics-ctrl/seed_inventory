@@ -40,22 +40,47 @@ ALERT_DAYS         = 14     # days to run-out → Bark alert (matches dashboard 
 ACTIVE_STATUSES    = frozenset({'In Use', 'On Shelf'})
 APPSHEET_BASE      = 'https://api.appsheet.com/api/v2/apps'
 
-ENV_FILE  = Path.home() / '.hrh_seed.env'
+HRH_ENV   = Path.home() / '.hrh_env'        # primary — shared HRH credentials file
+SEED_ENV  = Path.home() / '.hrh_seed.env'  # fallback — standalone / override file
 LOG_FILE  = Path.home() / 'hrh_seed_check.log'
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def load_env():
-    if not ENV_FILE.exists():
-        sys.exit(f'Missing {ENV_FILE}. Create it with GC_API_KEY, GR_API_KEY, and BARK_KEY.')
-    with open(ENV_FILE) as fh:
+def _parse_env_file(path):
+    result = {}
+    with open(path) as fh:
         for raw in fh:
             line = raw.strip()
             if not line or line.startswith('#') or '=' not in line:
                 continue
             k, _, v = line.partition('=')
-            os.environ.setdefault(k.strip(), v.strip())
+            result[k.strip()] = v.strip().strip('"').strip("'")
+    return result
+
+
+def load_env():
+    """
+    Load credentials, trying ~/.hrh_env first (shared HRH file), then
+    ~/.hrh_seed.env (standalone override).  Maps the Pi's key names to the
+    internal names GC_API_KEY / GR_API_KEY / BARK_KEY used throughout this script.
+    """
+    # ~/.hrh_env — primary source (APPSHEET_GROWTH_CONTROLS_KEY, etc.)
+    if HRH_ENV.exists():
+        creds = _parse_env_file(HRH_ENV)
+        os.environ.setdefault('GC_API_KEY',  creds.get('APPSHEET_GROWTH_CONTROLS_KEY', ''))
+        os.environ.setdefault('GR_API_KEY',  creds.get('APPSHEET_GROWTH_RECIPES_KEY', ''))
+        os.environ.setdefault('BARK_KEY',    creds.get('BARK_DEVICE_KEY', ''))
+        os.environ.setdefault('GC_APP_ID',   creds.get('GC_APP_ID', DEFAULT_GC_APP_ID))
+        os.environ.setdefault('GR_APP_ID',   creds.get('GR_APP_ID', DEFAULT_GR_APP_ID))
+
+    # ~/.hrh_seed.env — optional override / standalone use
+    if SEED_ENV.exists():
+        for k, v in _parse_env_file(SEED_ENV).items():
+            os.environ.setdefault(k, v)
+
+    if not HRH_ENV.exists() and not SEED_ENV.exists():
+        sys.exit(f'Missing {HRH_ENV} (or {SEED_ENV}). One must exist with AppSheet + Bark keys.')
 
 
 def appsheet(app_id, api_key, table, action='Find', rows=None):
@@ -269,9 +294,9 @@ def main():
     gr_id    = os.environ.get('GR_APP_ID', DEFAULT_GR_APP_ID)
 
     if not gc_key or not gr_key:
-        sys.exit('ERROR: GC_API_KEY and GR_API_KEY must be set in ~/.hrh_seed.env')
+        sys.exit('ERROR: APPSHEET_GROWTH_CONTROLS_KEY / APPSHEET_GROWTH_RECIPES_KEY not found in ~/.hrh_env')
     if not bark_key and not args.dry_run:
-        sys.exit('ERROR: BARK_KEY must be set in ~/.hrh_seed.env')
+        sys.exit('ERROR: BARK_DEVICE_KEY not found in ~/.hrh_env')
 
     # ── test-bark mode ──────────────────────────────────────────────────────
     if args.test_bark:

@@ -25,26 +25,28 @@ A seed triggers an alert if **either** of these is true *and* it has no "Ordered
 SSH in and clone (or pull) this repo:
 
 ```bash
-ssh highridgehydro@192.168.1.174
+ssh highridgehydro@hrh-voice.local
 cd ~
 git clone https://github.com/highridgehydroponics-ctrl/seed_inventory.git
 # or, if already cloned:
 cd seed_inventory && git pull
 ```
 
-**2. Create the credentials file.**  
-Copy the example, then fill in your real keys:
+**2. Credentials — already done if you use `~/.hrh_env`.**  
+The script reads credentials from the shared `~/.hrh_env` file that all HRH Pi scripts use.  
+It looks for these keys automatically:
 
-```bash
-cp ~/seed_inventory/scripts/hrh_seed.env.example ~/.hrh_seed.env
-chmod 600 ~/.hrh_seed.env
-nano ~/.hrh_seed.env
-```
+| `~/.hrh_env` key | Used for |
+|---|---|
+| `APPSHEET_GROWTH_CONTROLS_KEY` | Growth Controls AppSheet app |
+| `APPSHEET_GROWTH_RECIPES_KEY` | Growth Recipes AppSheet app |
+| `BARK_DEVICE_KEY` | Bark iPhone push notifications |
 
-You need three values:
-- `GC_API_KEY` — AppSheet key for the Growth Controls app
-- `GR_API_KEY` — AppSheet key for the Growth Recipes app
-- `BARK_KEY` — device key from the Bark app on your iPhone
+If `~/.hrh_env` is already set up with those keys (it is on the HRH Pi), no extra file is needed.
+
+**Standalone / override:** you can also create `~/.hrh_seed.env` — see
+`scripts/hrh_seed.env.example` for the format.  Keys in `~/.hrh_seed.env` take
+precedence over `~/.hrh_env`.
 
 **3. Test it first (dry run — no notification sent):**
 
@@ -64,18 +66,16 @@ A message labeled "TEST" will arrive on your iPhone so you can confirm the Bark 
 
 ### Crontab — runs every day at 7:00 AM Eastern time
 
-The crontab entry below sets the timezone for just that line, so it works correctly
-even if the Pi's system clock is set to UTC:
+The crontab entry below sets the timezone inline and is already installed on the HRH Pi:
 
 ```
-CRON_TZ=America/New_York
-0 7 * * * cd /home/highridgehydro/seed_inventory && python3 scripts/check_seeds.py >> /home/highridgehydro/hrh_seed_check.log 2>&1
+0 7 * * * TZ=America/New_York /usr/bin/python3 /home/highridgehydro/seed_inventory/scripts/check_seeds.py >> /home/highridgehydro/hrh_seed_check.log 2>&1
 ```
 
 To add it without overwriting your existing cron jobs:
 
 ```bash
-(crontab -l 2>/dev/null; echo 'CRON_TZ=America/New_York'; echo '0 7 * * * cd /home/highridgehydro/seed_inventory && python3 scripts/check_seeds.py >> /home/highridgehydro/hrh_seed_check.log 2>&1') | crontab -
+(crontab -l 2>/dev/null; echo '0 7 * * * TZ=America/New_York /usr/bin/python3 /home/highridgehydro/seed_inventory/scripts/check_seeds.py >> /home/highridgehydro/hrh_seed_check.log 2>&1') | crontab -
 ```
 
 **To turn it off:** run `crontab -e`, find the two lines above, and delete them (or put a `#` in front of the `0 7` line).  

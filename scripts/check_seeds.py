@@ -1,0 +1,442 @@
+#!/usr/bin/env python3
+"""
+scripts/check_seeds.py — HRH Seed Inventory daily checker
+
+Reads AppSheet data, computes per-variety seed status (same logic as the
+dashboard in index.html), and sends a Bark push notification when any
+seeds are running low.
+
+Reads credentials from ~/.hrh_seed.env (chmod 600 that file).
+Required keys: GC_API_KEY, GR_API_KEY, BARK_KEY
+Optional keys: GC_APP_ID, GR_APP_ID (override built-in defaults)
+
+Usage:
+  python3 scripts/check_seeds.py            # normal run
+  python3 scripts/check_seeds.py --dry-run  # print results, no push, no log write
+
+Note: The dashboard marks a variety SOON when run-out is within 14 days.
+This script's Bark alert threshold is 21 days (per the owner's requirement),
+so varieties with 15–21 days left show OK on the dashboard but still trigger
+an alert here.
+"""
+
+import argparse
+import datetime
+import json
+import math
+import os
+import re
+import sys
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+# ── AppSheet app IDs (same defaults as dashboard; override via env file) ──────
+DEFAULT_GC_APP_ID = '0ddb09d1-5e1c-434e-9e6e-ce46a54cd628'   # Growth Controls
+DEFAULT_GR_APP_ID = 'fe7f55b7-a021-4f49-a9cb-c5528e8de84e'   # Growth Recipes
+
+G_PER_LB          = 453.592
+LOW_PCT            = 25     # % of bag → LOW  (matches dashboard)
+SOON_DAYS          = 14     # days to run-out → SOON status chip (matches dashboard)
+ALERT_DAYS         = 21     # days to run-out → Bark alert (owner-specified, wider than SOON)
+ACTIVE_STATUSES    = frozenset({'In Use', 'On Shelf'})
+APPSHEET_BASE      = 'https://api.appsheet.com/api/v2/apps'
+
+ENV_FILE  = Path.home() / '.hrh_seed.env'
+LOG_FILE  = Path.home() / 'hrh_seed_check.log'
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def load_env():
+    if not ENV_FILE.exists():
+        sys.exit(f'Missing {ENV_FILE}. Create it with GC_API_KEY, GR_API_KEY, and BARK_KEY.')
+    with open(ENV_FILE) as fh:
+        for raw in fh:
+            line = raw.strip()
+            if not line or line.startswith('#') or '=' not in line:
+                continue
+            k, _, v = line.partition('=')
+            os.environ.setdefault(k.strip(), v.strip())
+
+
+def appsheet(app_id, api_key, table, action='Find', rows=None):
+    url = f"{APPSHEET_BASE}/{app_id}/tables/{urllib.parse.quote(table, safe='')}/Action"
+    body = json.dumps({
+        'Action': action,
+        'Properties': {'Locale': 'en-US'},
+        'Rows': rows or [],
+    }).encode()
+    req = urllib.request.Request(url, data=body, headers={
+        'ApplicationAccessKey': api_key,
+        'Content-Type': 'application/json',
+    })
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        text = resp.read().decode()
+    if not text.strip():
+        return []
+    data = json.loads(text)
+    return data if isinstance(data, list) else (data.get('Rows') or [])
+
+
+def parse_dt(s):
+    """Parse AppSheet date strings: MM/DD/YYYY or MM/DD/YYYY HH:MM:SS."""
+    if not s:
+        return None
+    m = re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?', str(s))
+    if not m:
+        return None
+    return datetime.datetime(int(m[3]), int(m[1]), int(m[2]),
+                             int(m[4] or 0), int(m[5] or 0), int(m[6] or 0))
+
+
+def num(v):
+    try:
+        return float(str(v or '').replace(',', ''))
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def fmt_g(g):
+    return f'{round(g):,} g'
+
+
+def fmt_lb(g):
+    return f'{g / G_PER_LB:.2f} lb'
+
+
+def fmt_date(d):
+    """'Oct 5, 2026' — cross-platform, no leading zero."""
+    if d is None:
+        return '—'
+    return f"{d.strftime('%b')} {d.day}, {d.year}"
+
+
+def fmt_date_short(d):
+    """'Oct 5' — for notification body."""
+    if d is None:
+        return '—'
+    return f"{d.strftime('%b')} {d.day}"
+
+
+# ── core calculation (mirrors dashboard compute()) ────────────────────────────
+
+def compute_variety(v, planted, future, lots, counts, now, today):
+    """
+    Replicate the dashboard's compute() for one variety.
+    planted : list of {'at': datetime, 'g': float}
+    future  : list of {'date': datetime, 'g': float}  (already filtered >= today)
+    Returns a dict with all display and alert fields.
+    """
+    sd = num(v.get('sd', 0))
+
+    # Seed used in last 7 and 28 days (mirrors dashboard: now - p.at <= N * DAY)
+    used7  = sum(p['g'] for p in planted if (now - p['at']).total_seconds() <= 7 * 86400)
+    used28 = sum(p['g'] for p in planted if (now - p['at']).total_seconds() <= 28 * 86400)
+
+    # Future plantings sorted by date (ascending)
+    fut       = sorted(future, key=lambda f: f['date'])
+    fut_total = sum(f['g'] for f in fut)
+
+    # Active lots (In Use / On Shelf)
+    act = [l for l in lots if l.get('status', '') in ACTIVE_STATUSES]
+
+    def lot_date(l):
+        return parse_dt(l.get('date_recieved') or l.get('lot # Start')) or datetime.datetime(1970, 1, 1)
+
+    # Most recent active lot with total_lbs > 0  →  reference bag size
+    ref_lots = sorted([l for l in act if num(l.get('total_lbs', 0)) > 0], key=lot_date, reverse=True)
+    ref_lot  = ref_lots[0] if ref_lots else None
+
+    # seed_counts entries with counted_at + counted_grams set, newest first
+    valid_counts = sorted(
+        [c for c in counts if parse_dt(c.get('counted_at')) and num(c.get('counted_grams', 0)) > 0],
+        key=lambda c: parse_dt(c['counted_at']),
+        reverse=True,
+    )
+    count_row = valid_counts[0] if valid_counts else None
+    max_count = max((num(c.get('counted_grams', 0)) for c in valid_counts), default=0.0)
+
+    # Newest restock entry (entry_type='restock', added_grams > 0)
+    restocks = sorted(
+        [c for c in counts if c.get('entry_type') == 'restock' and num(c.get('added_grams', 0)) > 0],
+        key=lambda c: parse_dt(c['counted_at']),
+        reverse=True,
+    )
+    last_restock = restocks[0] if restocks else None
+
+    # Bag size (mirrors dashboard bagG logic exactly)
+    bag_g = (num(ref_lot['total_lbs']) * G_PER_LB) if ref_lot else max_count
+    if last_restock:
+        lr_date = parse_dt(last_restock['counted_at'])
+        if not ref_lot or (lr_date and lr_date >= lot_date(ref_lot)):
+            bag_g = num(last_restock['added_grams'])
+
+    result = dict(
+        id=v.get('id', ''), name=v.get('name', ''), sd=sd,
+        used7=used7, used28=used28,
+        on_hand=None, lot_g=bag_g, pct=None, trays=None,
+        run_out=None, run_note='', status='SETUP', base_at=None,
+    )
+
+    if not count_row:
+        return result   # no baseline count yet
+
+    base_at = parse_dt(count_row['counted_at'])
+    base    = num(count_row['counted_grams'])
+    used_since = sum(p['g'] for p in planted if base_at <= p['at'] <= now)
+    on_hand    = base - used_since
+
+    result['base_at'] = base_at
+    result['on_hand'] = on_hand
+    result['pct']     = (on_hand / bag_g * 100) if bag_g > 0 else 0.0
+    result['trays']   = (max(0.0, on_hand) / sd) if sd > 0 else None
+
+    if on_hand <= 0:
+        result['run_out']  = today          # datetime.date
+        result['run_note'] = 'out now'
+    else:
+        # Walk scheduled future plantings to find exhaustion point
+        cum = 0.0
+        for f in fut:
+            cum += f['g']
+            if cum > on_hand:
+                d = f['date']
+                result['run_out']  = d.date() if isinstance(d, datetime.datetime) else d
+                result['run_note'] = 'scheduled plantings'
+                break
+
+        if result['run_out'] is None:
+            rate = used28 / 28.0 if used28 > 0 else 0.0
+            if rate > 0:
+                last = fut[-1]['date'] if fut else datetime.datetime(today.year, today.month, today.day)
+                last_d = last.date() if isinstance(last, datetime.datetime) else last
+                extra  = max(0.0, on_hand - fut_total) / rate
+                result['run_out']  = last_d + datetime.timedelta(days=extra)
+                result['run_note'] = ('after schedule ends, at recent pace' if fut
+                                      else 'at recent pace')
+            else:
+                result['run_note'] = 'no recent use'
+
+    # Status chip — matches dashboard (SOON_DAYS = 14)
+    days = (result['run_out'] - today).days if result['run_out'] else None
+    if on_hand <= 0:
+        result['status'] = 'OUT'
+    elif result['pct'] < LOW_PCT:
+        result['status'] = 'LOW'
+    elif days is not None and days <= SOON_DAYS:
+        result['status'] = 'SOON'
+    else:
+        result['status'] = 'OK'
+
+    return result
+
+
+# ── Bark notification ─────────────────────────────────────────────────────────
+
+def send_bark(bark_key, title, body, dry_run=False):
+    if dry_run:
+        print('\n[DRY RUN] Would send Bark push notification:')
+        print(f'  Title : {title}')
+        print('  Body  :')
+        for line in body.splitlines():
+            print(f'    {line}')
+        return
+    payload = json.dumps({'title': title, 'body': body, 'device_key': bark_key}).encode()
+    req = urllib.request.Request(
+        'https://api.day.app/push',
+        data=payload,
+        headers={'Content-Type': 'application/json'},
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return resp.read().decode()
+
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(description='HRH seed inventory daily checker')
+    parser.add_argument('--dry-run', action='store_true',
+                        help='Print what would happen; do not send push or write log')
+    parser.add_argument('--test-bark', action='store_true',
+                        help='Send a clearly labeled TEST notification and exit')
+    args = parser.parse_args()
+
+    load_env()
+
+    gc_key   = os.environ.get('GC_API_KEY', '')
+    gr_key   = os.environ.get('GR_API_KEY', '')
+    bark_key = os.environ.get('BARK_KEY', '')
+    gc_id    = os.environ.get('GC_APP_ID', DEFAULT_GC_APP_ID)
+    gr_id    = os.environ.get('GR_APP_ID', DEFAULT_GR_APP_ID)
+
+    if not gc_key or not gr_key:
+        sys.exit('ERROR: GC_API_KEY and GR_API_KEY must be set in ~/.hrh_seed.env')
+    if not bark_key and not args.dry_run:
+        sys.exit('ERROR: BARK_KEY must be set in ~/.hrh_seed.env')
+
+    # ── test-bark mode ──────────────────────────────────────────────────────
+    if args.test_bark:
+        print('Sending TEST Bark notification…')
+        result = send_bark(bark_key,
+                           'TEST — HRH seed check',
+                           'If you see this, the seed checker script is wired up correctly.\n'
+                           'No seeds are actually low right now (this is just a connectivity test).')
+        print(f'Bark response: {result}')
+        return
+
+    now   = datetime.datetime.now()
+    today = datetime.date.today()
+
+    # ── fetch data ──────────────────────────────────────────────────────────
+    print('Fetching AppSheet data…', flush=True)
+    varieties = appsheet(gc_id, gc_key, 'variety')
+    batches   = appsheet(gc_id, gc_key, 'batch')
+    inv       = appsheet(gr_id, gr_key, 'seed_inventory')
+    counts    = appsheet(gr_id, gr_key, 'seed_counts')
+    print(f'  varieties={len(varieties)}  batches={len(batches)}'
+          f'  inv lots={len(inv)}  count entries={len(counts)}')
+
+    # ── filter to active microgreens (no mixes, no testing) ─────────────────
+    vars_ = [v for v in varieties
+             if v.get('reserve_1') == 'Microgreen'
+             and v.get('mix?') != 'Y'
+             and not re.match(r'^testing', v.get('name', ''), re.I)
+             and v.get('production_status') == 'ACTIVE']
+
+    # ── build planted / future arrays per variety ────────────────────────────
+    by_var = {v['id']: {'v': v, 'planted': [], 'future': []} for v in vars_}
+    for b in batches:
+        o = by_var.get(b.get('variety'))
+        if not o:
+            continue
+        trays = num(b.get('number_of_trays', 0))
+        sd    = num(b.get('_sd', 0)) or num(o['v'].get('sd', 0))
+        g     = trays * sd
+        if b.get('actual_planting_date'):
+            at = parse_dt(b['actual_planting_date'])
+            if at:
+                o['planted'].append({'at': at, 'g': g})
+        else:
+            d = parse_dt(b.get('optimal_planting_date'))
+            if d and d.date() >= today:
+                o['future'].append({'date': d, 'g': g})
+
+    # ── group lots and counts by variety ────────────────────────────────────
+    lots_by   = {}
+    for l in inv:
+        lots_by.setdefault(l.get('variety_id', ''), []).append(l)
+
+    counts_by = {}
+    for c in counts:
+        counts_by.setdefault(c.get('variety_id', ''), []).append(c)
+
+    # variety IDs that already have an 'Ordered' lot → suppress alert
+    ordered_ids = {l.get('variety_id') for l in inv if l.get('status') == 'Ordered'}
+
+    # ── compute status for every variety ────────────────────────────────────
+    results = []
+    for v in vars_:
+        vid = v['id']
+        o   = by_var[vid]
+        r   = compute_variety(
+            v, o['planted'], o['future'],
+            lots_by.get(vid, []), counts_by.get(vid, []),
+            now, today,
+        )
+        results.append(r)
+
+    rank = {'OUT': 0, 'LOW': 1, 'SOON': 2, 'OK': 3, 'SETUP': 4}
+    results.sort(key=lambda r: (rank[r['status']], r['name'].lower()))
+
+    # ── print results table ──────────────────────────────────────────────────
+    W = 100
+    print()
+    print(f"{'Variety':<22} {'On Hand':>18} {'%Bag':>5} {'Trays':>6}  {'Run-out':<14} {'Status':<8}  Alert / Note")
+    print('─' * W)
+    for r in results:
+        if r['on_hand'] is None:
+            oh, pct, tr, ro = '— (no count yet)', '', '—', '—'
+            days_left = None
+        else:
+            oh        = f"{fmt_g(r['on_hand'])} / {fmt_lb(r['on_hand'])}"
+            pct       = f"{r['pct']:.0f}%"
+            tr        = str(math.floor(r['trays'])) if r['trays'] is not None else '—'
+            ro        = fmt_date(r['run_out'])
+            days_left = (r['run_out'] - today).days if r['run_out'] else None
+
+        # alert condition: LOW/OUT, or run-out within ALERT_DAYS (21)
+        will_alert = (
+            r['on_hand'] is not None
+            and (
+                r['status'] in ('OUT', 'LOW')
+                or (days_left is not None and days_left <= ALERT_DAYS)
+            )
+        )
+        if will_alert and r['id'] in ordered_ids:
+            note = '(ordered — suppressed)'
+        elif will_alert:
+            reasons = []
+            if r['status'] in ('OUT', 'LOW'):
+                reasons.append(f"{r['pct']:.0f}% of bag")
+            if days_left is not None and days_left <= ALERT_DAYS:
+                reasons.append(f"runs out in {days_left}d")
+            note = 'ALERT — ' + ', '.join(reasons)
+        else:
+            note = ''
+
+        print(f"{r['name']:<22} {oh:>18} {pct:>5} {tr:>6}  {ro:<14} {r['status']:<8}  {note}")
+
+    print('─' * W)
+
+    # ── collect seeds that need a Bark alert ─────────────────────────────────
+    alert_seeds = []
+    for r in results:
+        if r['on_hand'] is None or r['id'] in ordered_ids:
+            continue
+        days_left = (r['run_out'] - today).days if r['run_out'] else None
+        if r['status'] in ('OUT', 'LOW') or (days_left is not None and days_left <= ALERT_DAYS):
+            alert_seeds.append(r)
+
+    print(f"\n{len(alert_seeds)} seed(s) need attention out of {len(results)} tracked.")
+
+    if alert_seeds:
+        lines = []
+        for r in alert_seeds:
+            days_left = (r['run_out'] - today).days if r['run_out'] else None
+            reasons   = []
+            if r['status'] in ('OUT', 'LOW'):
+                reasons.append(f"{r['pct']:.0f}% of bag")
+            if days_left is not None and days_left <= ALERT_DAYS:
+                reasons.append(f"runs out in {days_left}d")
+            why = ', '.join(reasons) if reasons else r['status']
+            oh  = f"{fmt_g(r['on_hand'])} / {fmt_lb(r['on_hand'])}"
+            ro  = fmt_date_short(r['run_out'])
+            lines.append(f"• {r['name']}: {oh}, run-out {ro} [{why}]")
+
+        title = f"\U0001f331 {len(alert_seeds)} seed{'s' if len(alert_seeds) != 1 else ''} to order"
+        body  = '\n'.join(lines)
+
+        send_bark(bark_key, title, body, dry_run=args.dry_run)
+        if not args.dry_run:
+            print(f"Bark sent: {title}")
+    else:
+        if args.dry_run:
+            print('[DRY RUN] Nothing is low — no notification would be sent.')
+        else:
+            print('All seeds OK. No notification sent.')
+
+    # ── log one line per run ──────────────────────────────────────────────────
+    summary  = ', '.join(f"{r['name']} ({r['status']})" for r in alert_seeds) or 'all OK'
+    log_line = f"{now.strftime('%Y-%m-%d %H:%M:%S')}  {len(alert_seeds)} low: {summary}\n"
+    if args.dry_run:
+        print(f'\n[DRY RUN] Would append to {LOG_FILE}:')
+        print(f'  {log_line.rstrip()}')
+    else:
+        with open(LOG_FILE, 'a') as fh:
+            fh.write(log_line)
+        print(f'Logged → {LOG_FILE}')
+
+
+if __name__ == '__main__':
+    main()

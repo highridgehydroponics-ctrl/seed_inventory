@@ -101,3 +101,24 @@ tail -20 ~/hrh_seed_check.log
 The dashboard reads AppSheet directly from the browser — there is no JSON snapshot file
 in this repo. The `check_seeds.py` script also reads AppSheet live each run.
 Nothing is committed to the repo on a normal run.
+
+### True Leaf delivery sweep (added 10/27/2026)
+
+Every seed check run first calls `scripts/seed_deliveries.py`. It reads True Leaf
+Market "Your order has been delivered!" emails (last 45 days), turns each seed line
+(e.g. *Green Mustard 5 lb x 2*) into grams, and adds it to the AppSheet
+`seed_counts` table the same way the dashboard's **+ Add seed** button does.
+It skips bags already covered by a later hand count, orders already recorded, and
+bags typed in by hand within 4 days. Unknown products or bad sizes are flagged in a
+Bark, never guessed. Johnny's deliveries are ignored (their emails list no products).
+Delivered orders no longer count as "on order", and vendor ads in emails are ignored.
+
+- Map a new product: add a line to `ALIASES` in `scripts/seed_deliveries.py`
+  (products you don't track go in `IGNORE`, e.g. Mizuna).
+- Sprout's seed answer (`~/hrh-ptt/seed-inventory.py`) uses the same `seed_status()`
+  function from `check_seeds.py`, so it always matches this daily check.
+- Test (no writes): `~/hrh-venv/bin/python scripts/test_seed_deliveries.py`
+- Preview on real data (no writes): `~/hrh-venv/bin/python scripts/seed_deliveries.py --dry-run`
+- Run cost: no AI and no API credits (plain Gmail + AppSheet calls).
+- Turn off: comment out the `seed_deliveries.sweep(...)` block in `scripts/check_seeds.py`
+  (and `_delivery_sweep` in `~/hrh-ptt/seed-inventory.py`).

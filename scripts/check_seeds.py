@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/highridgehydro/hrh-venv/bin/python
 """
 scripts/check_seeds.py — HRH Seed Inventory daily checker
 
@@ -10,9 +10,10 @@ Reads credentials from ~/.hrh_seed.env (chmod 600 that file).
 Required keys: GC_API_KEY, GR_API_KEY, BARK_KEY
 Optional keys: GC_APP_ID, GR_APP_ID (override built-in defaults)
 
-Usage:
-  python3 scripts/check_seeds.py            # normal run
-  python3 scripts/check_seeds.py --dry-run  # print results, no push, no log write
+Usage (run with the hrh-venv Python; it has the Google libraries for the
+vendor Gmail check, system python3 does not):
+  ~/hrh-venv/bin/python scripts/check_seeds.py            # normal run
+  ~/hrh-venv/bin/python scripts/check_seeds.py --dry-run  # print results, no push, no log write
 
 Alert thresholds match the dashboard: LOW = below 25% of bag, SOON = run-out
 within 14 days. Varieties already showing an Ordered lot are suppressed.
@@ -28,6 +29,9 @@ import sys
 import urllib.parse
 import urllib.request
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import seed_deliveries
 
 # ── AppSheet app IDs (same defaults as dashboard; override via env file) ──────
 DEFAULT_GC_APP_ID = '0ddb09d1-5e1c-434e-9e6e-ce46a54cd628'   # Growth Controls
@@ -46,6 +50,138 @@ LOG_FILE  = Path.home() / 'hrh_seed_check.log'
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+
+
+# ── Seed-vendor Gmail check ───────────────────────────────────────────────────
+_SEED_VENDORS = {
+    "trueleafmarket.com": "TrueLeaf Market",
+    "johnnyseeds.com":    "Johnny's Seeds",
+}
+
+def _gmail_service():
+    # Build Gmail API service reusing hrh-sweep token. Returns None on failure.
+    try:
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+        from googleapiclient.discovery import build
+    except ImportError:
+        # Must run under ~/hrh-venv/bin/python (system python3 lacks Google libs).
+        print("WARNING: Google API libraries missing; vendor Gmail check skipped. "
+              "Run with /home/highridgehydro/hrh-venv/bin/python", file=sys.stderr)
+        return None
+    token_path = os.path.expanduser("~/hrh-sweep/.google_token.json")
+    if not os.path.exists(token_path):
+        return None
+    try:
+        # No scope override: keep the sweep token's full scope list on refresh.
+        creds = Credentials.from_authorized_user_file(token_path)
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                with open(token_path, "w") as _f:
+                    _f.write(creds.to_json())
+            else:
+                return None
+        return build("gmail", "v1", credentials=creds)
+    except Exception:
+        return None
+
+
+def _msg_plain(msg):
+    # Extract plain text from a Gmail API message.
+    import base64 as _b64
+    def _strip(html): return re.sub(r'<[^>]+>', ' ', html)
+    def _walk(p):
+        mime = p.get("mimeType", "")
+        if mime == "text/plain":
+            d = p.get("body", {}).get("data", "")
+            if d: return _b64.urlsafe_b64decode(d).decode("utf-8", errors="replace")
+        elif mime == "text/html":
+            d = p.get("body", {}).get("data", "")
+            if d: return _strip(_b64.urlsafe_b64decode(d).decode("utf-8", errors="replace"))
+        elif mime.startswith("multipart/"):
+            for part in p.get("parts", []):
+                if part.get("mimeType") == "text/plain":
+                    r = _walk(part)
+                    if r: return r
+            for part in p.get("parts", []):
+                r = _walk(part)
+                if r: return r
+        return ""
+    return _walk(msg.get("payload", {}))
+
+
+_NOT_PENDING_RE = re.compile(r"delivered|picked up|out for delivery", re.I)
+_ADS_RE = re.compile(r"YOU MIGHT ALSO LIKE|Growers Also Purchased|while you wait, check these out", re.I)
+
+
+def tracked_varieties(varieties):
+    # Active microgreens the seed check tracks (no mixes, no testing).
+    return [v for v in varieties
+            if v.get('reserve_1') == 'Microgreen'
+            and v.get('mix?') != 'Y'
+            and not re.match(r'^testing', v.get('name', ''), re.I)
+            and v.get('production_status') == 'ACTIVE']
+
+
+def gmail_ordered_names(svc, variety_names, delivered_orders=None, details=None):
+    # Search Gmail for TrueLeaf / Johnny's order emails (last 90 days).
+    # Returns set of variety names that appear in those emails, skipping
+    # orders already delivered (delivered_orders = order numbers from the
+    # delivery sweep) and delivery-status emails.
+    # If a dict is passed as `details`, it is filled with
+    # {variety: {vendor, date, subject}} for the matching email (used by Sprout).
+    if svc is None:
+        return set()
+    cutoff = (datetime.datetime.now() - datetime.timedelta(days=90)).strftime("%Y/%m/%d")
+    query  = f"(from:trueleafmarket.com OR from:johnnyseeds.com) (subject:order OR subject:ship OR subject:confirm) after:{cutoff}"
+    try:
+        resp     = svc.users().messages().list(userId="me", q=query, maxResults=30).execute()
+        messages = resp.get("messages", [])
+    except Exception:
+        return set()
+    name_lower = [n.lower() for n in variety_names]
+    found: set = set()
+    for meta in messages:
+        try:
+            msg = svc.users().messages().get(userId="me", id=meta["id"], format="full").execute()
+        except Exception:
+            continue
+        hdrs   = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
+        if not any(d in hdrs.get("From", "").lower() for d in _SEED_VENDORS):
+            continue
+        # A delivered / picked-up / out-for-delivery email is not a pending order.
+        if _NOT_PENDING_RE.search(hdrs.get("Subject", "")):
+            continue
+        body = _msg_plain(msg)
+        # Order already delivered (seen by the delivery sweep) → no longer on order.
+        if seed_deliveries.order_number(body) in (delivered_orders or set()):
+            continue
+        # Drop the vendor's "you might also like" ads so they don't count as ordered.
+        body = _ADS_RE.split(body)[0]
+        search_text = (hdrs.get("Subject", "") + " " + body).lower()
+        for i, nl in enumerate(name_lower):
+            orig = variety_names[i]
+            if orig in found: continue
+            words = [w for w in nl.split() if len(w) >= 5]
+            if nl in search_text or (words and all(w in search_text for w in words)):
+                found.add(orig)
+                if details is not None:
+                    details[orig] = _email_info(hdrs)
+    return found
+
+
+def _email_info(hdrs):
+    from email.utils import parsedate_to_datetime
+    frm = hdrs.get("From", "").lower()
+    try:
+        d = parsedate_to_datetime(hdrs.get("Date", ""))
+        when = f"{d.month}/{d.day}/{d.year}"
+    except Exception:
+        when = "unknown date"
+    return {"vendor": next((v for k, v in _SEED_VENDORS.items() if k in frm), ""),
+            "date": when, "subject": hdrs.get("Subject", "")}
+
 
 def _parse_env_file(path):
     result = {}
@@ -94,12 +230,21 @@ def appsheet(app_id, api_key, table, action='Find', rows=None):
         'ApplicationAccessKey': api_key,
         'Content-Type': 'application/json',
     })
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        text = resp.read().decode()
-    if not text.strip():
-        return []
-    data = json.loads(text)
-    return data if isinstance(data, list) else (data.get('Rows') or [])
+    last_err = None
+    for attempt in range(1, 4):
+        try:
+            with urllib.request.urlopen(req, timeout=45) as resp:
+                text = resp.read().decode()
+            if not text.strip():
+                return []
+            data = json.loads(text)
+            return data if isinstance(data, list) else (data.get('Rows') or [])
+        except Exception as e:
+            last_err = e
+            if attempt < 3:
+                import time as _time
+                _time.sleep(5 * attempt)
+    raise RuntimeError(f"AppSheet {table} failed after 3 attempts: {last_err}")
 
 
 def parse_dt(s):
@@ -255,6 +400,68 @@ def compute_variety(v, planted, future, lots, counts, now, today):
     return result
 
 
+def seed_status(vars_, batches, inv, counts, email_ordered_names, now, today):
+    """
+    Status for every tracked variety — the ONE place the seed math lives.
+    Used by this script (7:20 AM check) and by ~/hrh-ptt/seed-inventory.py (Sprout),
+    so both always give the same numbers. Each result also gets:
+      days_left, alert (would Bark), ordered (Ordered lot or open order email),
+      reasons (why it alerts), trays_on_order_lbs (lbs in 'Ordered' lots).
+    """
+    by_var = {v['id']: {'v': v, 'planted': [], 'future': []} for v in vars_}
+    for b in batches:
+        o = by_var.get(b.get('variety'))
+        if not o:
+            continue
+        trays = num(b.get('number_of_trays', 0))
+        sd    = num(b.get('_sd', 0)) or num(o['v'].get('sd', 0))
+        g     = trays * sd
+        if b.get('actual_planting_date'):
+            at = parse_dt(b['actual_planting_date'])
+            if at:
+                o['planted'].append({'at': at, 'g': g})
+        else:
+            d = parse_dt(b.get('optimal_planting_date'))
+            if d and d.date() >= today:
+                o['future'].append({'date': d, 'g': g})
+
+    lots_by = {}
+    for l in inv:
+        lots_by.setdefault(l.get('variety_id', ''), []).append(l)
+    counts_by = {}
+    for c in counts:
+        counts_by.setdefault(c.get('variety_id', ''), []).append(c)
+
+    # variety IDs that already have an 'Ordered' lot → suppress alert
+    ordered_ids = {l.get('variety_id') for l in inv if l.get('status') == 'Ordered'}
+
+    results = []
+    for v in vars_:
+        vid = v['id']
+        o   = by_var[vid]
+        r   = compute_variety(v, o['planted'], o['future'],
+                              lots_by.get(vid, []), counts_by.get(vid, []), now, today)
+        days_left = (r['run_out'] - today).days if r['run_out'] else None
+        reasons = []
+        if r['on_hand'] is not None:
+            if r['status'] in ('OUT', 'LOW'):
+                reasons.append(f"{r['pct']:.0f}% of bag")
+            if days_left is not None and days_left <= ALERT_DAYS:
+                reasons.append(f"runs out in {days_left}d")
+        r.update(
+            days_left=days_left, reasons=reasons, alert=bool(reasons),
+            ordered=(vid in ordered_ids or r.get('name', '') in email_ordered_names),
+            trays_on_order_lbs=sum(num(l.get('total_lbs')) for l in lots_by.get(vid, [])
+                                   if l.get('status') == 'Ordered'),
+            used28_trays=(r['used28'] / r['sd']) if r['sd'] else 0.0,
+        )
+        results.append(r)
+
+    rank = {'OUT': 0, 'LOW': 1, 'SOON': 2, 'OK': 3, 'SETUP': 4}
+    results.sort(key=lambda r: (rank[r['status']], r['name'].lower()))
+    return results
+
+
 # ── Bark notification ─────────────────────────────────────────────────────────
 
 def send_bark(bark_key, title, body, dry_run=False):
@@ -265,7 +472,7 @@ def send_bark(bark_key, title, body, dry_run=False):
         for line in body.splitlines():
             print(f'    {line}')
         return
-    payload = json.dumps({'title': title, 'body': body, 'device_key': bark_key}).encode()
+    payload = json.dumps({'title': title, 'body': body, 'device_key': bark_key, 'sound': 'default', 'url': 'https://highridgehydroponics-ctrl.github.io/seed_inventory/', 'url_label': 'Open Dashboard'}).encode()
     req = urllib.request.Request(
         'https://api.day.app/push',
         data=payload,
@@ -291,6 +498,20 @@ def main():
     gr_key   = os.environ.get('GR_API_KEY', '')
     bark_key = os.environ.get('BARK_KEY', '')
     gc_id    = os.environ.get('GC_APP_ID', DEFAULT_GC_APP_ID)
+
+    # On unhandled exception, send a Bark alert so cron failures are visible.
+    import sys as _sys_hook
+    _orig_hook = _sys_hook.excepthook
+    def _failure_hook(exc_type, exc_val, tb):
+        import traceback as _tb
+        if bark_key and not args.dry_run:
+            snippet = ''.join(_tb.format_exception(exc_type, exc_val, tb))[-300:]
+            try:
+                send_bark(bark_key, '❌ Seed check FAILED', f'{exc_val}\n{snippet[-200:]}')
+            except Exception:
+                pass
+        _orig_hook(exc_type, exc_val, tb)
+    _sys_hook.excepthook = _failure_hook
     gr_id    = os.environ.get('GR_APP_ID', DEFAULT_GR_APP_ID)
 
     if not gc_key or not gr_key:
@@ -321,56 +542,28 @@ def main():
           f'  inv lots={len(inv)}  count entries={len(counts)}')
 
     # ── filter to active microgreens (no mixes, no testing) ─────────────────
-    vars_ = [v for v in varieties
-             if v.get('reserve_1') == 'Microgreen'
-             and v.get('mix?') != 'Y'
-             and not re.match(r'^testing', v.get('name', ''), re.I)
-             and v.get('production_status') == 'ACTIVE']
+    vars_ = tracked_varieties(varieties)
 
-    # ── build planted / future arrays per variety ────────────────────────────
-    by_var = {v['id']: {'v': v, 'planted': [], 'future': []} for v in vars_}
-    for b in batches:
-        o = by_var.get(b.get('variety'))
-        if not o:
-            continue
-        trays = num(b.get('number_of_trays', 0))
-        sd    = num(b.get('_sd', 0)) or num(o['v'].get('sd', 0))
-        g     = trays * sd
-        if b.get('actual_planting_date'):
-            at = parse_dt(b['actual_planting_date'])
-            if at:
-                o['planted'].append({'at': at, 'g': g})
-        else:
-            d = parse_dt(b.get('optimal_planting_date'))
-            if d and d.date() >= today:
-                o['future'].append({'date': d, 'g': g})
+    # ── True Leaf delivery sweep: add delivered bags to seed_counts first ────
+    gmail_svc = _gmail_service()
+    deliv = seed_deliveries.sweep(
+        gmail_svc, _msg_plain, varieties, batches, counts,
+        {v.get('name', '') for v in vars_},
+        appsheet_add=lambda rows: appsheet(gr_id, gr_key, 'seed_counts', 'Add', rows),
+        bark=lambda t, b: send_bark(bark_key, t, b),
+        dry_run=args.dry_run,
+    )
+    if deliv['wrote']:
+        counts = appsheet(gr_id, gr_key, 'seed_counts')   # re-read so the math uses AppSheet's copy
 
-    # ── group lots and counts by variety ────────────────────────────────────
-    lots_by   = {}
-    for l in inv:
-        lots_by.setdefault(l.get('variety_id', ''), []).append(l)
+    # Varieties confirmed ordered via Gmail (not yet delivered)
+    _all_names = [v.get('name', '') for v in vars_ if v.get('name')]
+    email_ordered_names = gmail_ordered_names(gmail_svc, _all_names, deliv['delivered_orders'])
+    if email_ordered_names:
+        print(f"Gmail: order email found for: {', '.join(sorted(email_ordered_names))}")
 
-    counts_by = {}
-    for c in counts:
-        counts_by.setdefault(c.get('variety_id', ''), []).append(c)
-
-    # variety IDs that already have an 'Ordered' lot → suppress alert
-    ordered_ids = {l.get('variety_id') for l in inv if l.get('status') == 'Ordered'}
-
-    # ── compute status for every variety ────────────────────────────────────
-    results = []
-    for v in vars_:
-        vid = v['id']
-        o   = by_var[vid]
-        r   = compute_variety(
-            v, o['planted'], o['future'],
-            lots_by.get(vid, []), counts_by.get(vid, []),
-            now, today,
-        )
-        results.append(r)
-
-    rank = {'OUT': 0, 'LOW': 1, 'SOON': 2, 'OK': 3, 'SETUP': 4}
-    results.sort(key=lambda r: (rank[r['status']], r['name'].lower()))
+    # ── compute status for every variety (shared with Sprout's seed-inventory.py) ──
+    results = seed_status(vars_, batches, inv, counts, email_ordered_names, now, today)
 
     # ── print results table ──────────────────────────────────────────────────
     W = 100
@@ -388,23 +581,11 @@ def main():
             ro        = fmt_date(r['run_out'])
             days_left = (r['run_out'] - today).days if r['run_out'] else None
 
-        # alert condition: LOW/OUT, or run-out within ALERT_DAYS (21)
-        will_alert = (
-            r['on_hand'] is not None
-            and (
-                r['status'] in ('OUT', 'LOW')
-                or (days_left is not None and days_left <= ALERT_DAYS)
-            )
-        )
-        if will_alert and r['id'] in ordered_ids:
+        # alert condition: LOW/OUT, or run-out within ALERT_DAYS (see seed_status)
+        if r['alert'] and r['ordered']:
             note = '(ordered — suppressed)'
-        elif will_alert:
-            reasons = []
-            if r['status'] in ('OUT', 'LOW'):
-                reasons.append(f"{r['pct']:.0f}% of bag")
-            if days_left is not None and days_left <= ALERT_DAYS:
-                reasons.append(f"runs out in {days_left}d")
-            note = 'ALERT — ' + ', '.join(reasons)
+        elif r['alert']:
+            note = 'ALERT — ' + ', '.join(r['reasons'])
         else:
             note = ''
 
@@ -413,26 +594,14 @@ def main():
     print('─' * W)
 
     # ── collect seeds that need a Bark alert ─────────────────────────────────
-    alert_seeds = []
-    for r in results:
-        if r['on_hand'] is None or r['id'] in ordered_ids:
-            continue
-        days_left = (r['run_out'] - today).days if r['run_out'] else None
-        if r['status'] in ('OUT', 'LOW') or (days_left is not None and days_left <= ALERT_DAYS):
-            alert_seeds.append(r)
+    alert_seeds = [r for r in results if r['alert'] and not r['ordered']]
 
     print(f"\n{len(alert_seeds)} seed(s) need attention out of {len(results)} tracked.")
 
     if alert_seeds:
         lines = []
         for r in alert_seeds:
-            days_left = (r['run_out'] - today).days if r['run_out'] else None
-            reasons   = []
-            if r['status'] in ('OUT', 'LOW'):
-                reasons.append(f"{r['pct']:.0f}% of bag")
-            if days_left is not None and days_left <= ALERT_DAYS:
-                reasons.append(f"runs out in {days_left}d")
-            why = ', '.join(reasons) if reasons else r['status']
+            why = ', '.join(r['reasons']) if r['reasons'] else r['status']
             oh  = f"{fmt_g(r['on_hand'])} / {fmt_lb(r['on_hand'])}"
             ro  = fmt_date_short(r['run_out'])
             lines.append(f"• {r['name']}: {oh}, run-out {ro} [{why}]")

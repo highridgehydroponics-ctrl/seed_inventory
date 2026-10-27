@@ -2,3 +2,18 @@
 __pycache__/
 state/
 *.pyc
+
+# Added 2026-10-27 (system audit Section 6.5): backups, dated outputs, logs, databases never belong in git
+*.bak*
+*.snapshot*
+crontab.bak*
+crontab.new*
+route-dashboard-*.html
+driver-*.html
+HRH_Cheat_Sheet_*.pdf
+step_*.png
+sweep-data-*.json
+pending_batch_*.json
+morning-payment-sweep-*.pdf
+*.log
+*.sqlite

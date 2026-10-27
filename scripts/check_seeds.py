@@ -47,6 +47,7 @@ APPSHEET_BASE      = 'https://api.appsheet.com/api/v2/apps'
 HRH_ENV   = Path.home() / '.hrh_env'        # primary — shared HRH credentials file
 SEED_ENV  = Path.home() / '.hrh_seed.env'  # fallback — standalone / override file
 LOG_FILE  = Path.home() / 'hrh_seed_check.log'
+SEED_CACHE = Path.home() / 'hrh-cache' / 'seed_status.json'   # read by morning-report.py at 7:30
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -488,6 +489,8 @@ def main():
     parser = argparse.ArgumentParser(description='HRH seed inventory daily checker')
     parser.add_argument('--dry-run', action='store_true',
                         help='Print what would happen; do not send push or write log')
+    parser.add_argument('--write-cache', action='store_true',
+                        help='With --dry-run: still write ~/hrh-cache/seed_status.json')
     parser.add_argument('--test-bark', action='store_true',
                         help='Send a clearly labeled TEST notification and exit')
     args = parser.parse_args()
@@ -559,6 +562,14 @@ def main():
     # Varieties confirmed ordered via Gmail (not yet delivered)
     _all_names = [v.get('name', '') for v in vars_ if v.get('name')]
     email_ordered_names = gmail_ordered_names(gmail_svc, _all_names, deliv['delivered_orders'])
+    # True Leaf orders placed but not delivered yet (items, status, expected delivery)
+    try:
+        orders = seed_deliveries.open_orders(gmail_svc, _msg_plain, set(_all_names))
+    except Exception as e:
+        print(f'WARNING: open-order check failed: {e}', file=sys.stderr)
+        orders = []
+    on_order = seed_deliveries.on_order_by_variety(orders)
+    email_ordered_names |= set(on_order)
     if email_ordered_names:
         print(f"Gmail: order email found for: {', '.join(sorted(email_ordered_names))}")
 
@@ -593,20 +604,42 @@ def main():
 
     print('─' * W)
 
+    # ── on order (placed, not delivered yet) ─────────────────────────────────
+    print(f"\nON ORDER ({len(orders)} open True Leaf order{'s' if len(orders) != 1 else ''}):")
+    for o in orders:
+        items = ', '.join(f"{it.get('variety') or it['title']} {it['size']:g} {it['unit']} x {it['qty']}"
+                          for it in o['items'])
+        print(f"  #{o['order']} (ordered {o['placed']:%b} {o['placed'].day}): {items} — "
+              f"{seed_deliveries.describe_order_status(o)}")
+
     # ── collect seeds that need a Bark alert ─────────────────────────────────
     alert_seeds = [r for r in results if r['alert'] and not r['ordered']]
+    low_on_order = [r for r in results if r['alert'] and r['ordered']]
+
+    def on_order_text(name):
+        oo = on_order.get(name)
+        if not oo:
+            return 'on order'
+        return '; '.join(f"on order: {x['lbs']:g} lb, {x['status']}" for x in oo)
 
     print(f"\n{len(alert_seeds)} seed(s) need attention out of {len(results)} tracked.")
 
-    if alert_seeds:
+    if alert_seeds or low_on_order:
         lines = []
         for r in alert_seeds:
             why = ', '.join(r['reasons']) if r['reasons'] else r['status']
             oh  = f"{fmt_g(r['on_hand'])} / {fmt_lb(r['on_hand'])}"
             ro  = fmt_date_short(r['run_out'])
             lines.append(f"• {r['name']}: {oh}, run-out {ro} [{why}]")
+        for r in low_on_order:
+            ro = fmt_date_short(r['run_out'])
+            lines.append(f"• {r['name']} (low, already ordered): {fmt_lb(r['on_hand'])}, run-out {ro} — "
+                         f"{on_order_text(r['name'])}")
 
-        title = f"\U0001f331 {len(alert_seeds)} seed{'s' if len(alert_seeds) != 1 else ''} to order"
+        if alert_seeds:
+            title = f"\U0001f331 {len(alert_seeds)} seed{'s' if len(alert_seeds) != 1 else ''} to order"
+        else:
+            title = "\U0001f331 Low seed already on order"
         body  = '\n'.join(lines)
 
         send_bark(bark_key, title, body, dry_run=args.dry_run)
@@ -617,6 +650,28 @@ def main():
             print('[DRY RUN] Nothing is low — no notification would be sent.')
         else:
             print('All seeds OK. No notification sent.')
+
+    # ── status file for the morning report (same numbers as this check) ──────
+    cache = {
+        'generated_at': now.isoformat(timespec='seconds'),
+        'low': [dict(variety=r['name'], lbs=round(r['on_hand'] / G_PER_LB, 2),
+                     run_out=r['run_out'].isoformat() if r['run_out'] else None,
+                     reasons=r['reasons'], ordered=r['ordered'],
+                     on_order=on_order_text(r['name']) if r['ordered'] else None)
+                for r in alert_seeds + low_on_order],
+        'on_order': [dict(order=o['order'], vendor='True Leaf Market', placed=o['placed'].isoformat(),
+                          status=o['status'], eta=o['eta'].isoformat() if o['eta'] else None,
+                          status_text=seed_deliveries.describe_order_status(o),
+                          items=[dict(product=it['title'], variety=it.get('variety'),
+                                      lbs=round(it['grams'] / G_PER_LB, 2)) for it in o['items']])
+                     for o in orders],
+    }
+    if not args.dry_run or args.write_cache:
+        SEED_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = SEED_CACHE.with_suffix('.tmp')
+        tmp.write_text(json.dumps(cache, indent=1))
+        os.replace(tmp, SEED_CACHE)
+        print(f'Seed status saved → {SEED_CACHE}')
 
     # ── log one line per run ──────────────────────────────────────────────────
     summary  = ', '.join(f"{r['name']} ({r['status']})" for r in alert_seeds) or 'all OK'

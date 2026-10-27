@@ -127,5 +127,42 @@ check(act == 'skip', f'hand-entered restock within 4 days → skipped ({why})')
 act, row, why = sd.plan_restock('zzz', 'Wasabi', D(2026, 10, 26), 1000, '9', {'size': 1, 'unit': 'lb', 'qty': 1}, [], {})
 check(act == 'flag' and row is None, 'no starting count → flagged, not written')
 
+# 7. open orders (ordered, not delivered) — emails deliberately shuffled
+def oe(when, subject, order, items, extra=''):
+    marker = 'Items purchased:' if 'received' in subject else 'Items in this shipment:'
+    return dict(when=when, subject=subject, text=(
+        f'Order details: Order number: {order} Order date: Oct 23, 2026 {extra} {marker} | {items} | '
+        f'Summary Subtotal $1.00 Shipping - Priority Mail $26.00 | While you wait, check these out... '
+        f'Broccoli - Waltham 29 - Microgreens Seeds SHOP NOW'))
+LEEK = 'Leek - Large American Flag - Microgreens Seeds 1 lb Quantity: 1 $47.81 ' \
+       'Radish Seeds - Microgreen - Sango Purple (Organic) 5 lb Quantity: 1 $147.37'
+KALE = 'Kale - Dwarf Vates - Microgreens Seeds 25 lb Quantity: 1 $224.74'
+GM = 'Green Mustard Microgreens Seeds 5 lb Quantity: 2 $45.84'
+emails = [
+    oe(D(2026, 10, 26, 23, 50), 'Your order has been picked up!', '90000011', KALE,
+       '● Estimated delivery: Monday, November 2 ●'),
+    oe(D(2026, 10, 23, 16, 33), 'We have received your order!', '90000010', LEEK),
+    oe(D(2026, 10, 26, 16, 42), 'Your order has been delivered!', '90000012', GM),
+    oe(D(2026, 10, 26, 22, 8), 'Your order has been picked up!', '90000010', LEEK, 'Estimated delivery: Awaiting ETA'),
+    oe(D(2026, 10, 19, 15, 52), 'We have received your order!', '90000012', GM),
+    oe(D(2026, 10, 23, 17, 38), 'Your order is ready to ship!', '90000010', LEEK),
+    oe(D(2026, 10, 26, 11, 8), 'We have received your order!', '90000011', KALE),
+]
+t3 = {'Leeks', 'Rambo Radish', 'Kale', 'Green Mustard', 'Broccoli'}
+oo = sd.summarize_orders(emails, t3)
+check([o['order'] for o in oo] == ['90000010', '90000011'], 'open orders: delivered one dropped, oldest first')
+lk = oo[0]
+check(lk['status'] == 'shipped' and lk['eta'] is None and lk['shipping'] == 'Priority Mail',
+      'Leek order: shipped, no ETA yet, Priority Mail (newest email wins)')
+check([i['variety'] for i in lk['items']] == ['Leeks', 'Rambo Radish'], 'Leek → Leeks, Sango Purple → Rambo Radish (Joe)')
+check(oo[1]['eta'] == datetime.date(2026, 11, 2), 'Kale order ETA = Nov 2, 2026')
+check(not any(i['variety'] == 'Broccoli' for o in oo for i in o['items']), 'ads in order emails are not items')
+check(sd.describe_order_status(lk) == 'shipped Oct 26, no ETA yet (Priority Mail)', 'status text: shipped Oct 26, no ETA yet')
+check(sd.describe_order_status(oo[1]).startswith('shipped Oct 26, arriving Mon Nov 2'), 'status text: arriving Mon Nov 2')
+by = sd.on_order_by_variety(oo)
+check(set(by) == {'Leeks', 'Rambo Radish', 'Kale'} and by['Leeks'][0]['lbs'] == 1.0, 'on order by variety: Leeks 1 lb, Rambo, Kale')
+check(sd.parse_eta('Estimated delivery: Saturday, January 2', D(2026, 12, 29)) == datetime.date(2027, 1, 2),
+      'ETA across New Year → next year')
+
 print(f"\n{'ALL TESTS PASSED' if not fails else f'{len(fails)} TEST(S) FAILED'}")
 sys.exit(1 if fails else 0)

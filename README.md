@@ -113,6 +113,14 @@ bags typed in by hand within 4 days. Unknown products or bad sizes are flagged i
 Bark, never guessed. Johnny's deliveries are ignored (their emails list no products).
 Delivered orders no longer count as "on order", and vendor ads in emails are ignored.
 
+**On order (added 10/27/2026):** the seed check also reads True Leaf order-status emails
+(last 30 days) and lists every order not delivered yet: items, status and True Leaf's
+estimated delivery date. Seeds in an open order are not alerted as "order now"; the
+7:20 AM Bark says "low, already ordered" with the status. Results are saved to
+`~/hrh-cache/seed_status.json`, which the 7:30 AM morning report reads (its old
+separate low-seed math was removed), so the seed check, Sprout and the morning
+report always agree. "Sango Purple" radish counts as Rambo Radish.
+
 - Map a new product: add a line to `ALIASES` in `scripts/seed_deliveries.py`
   (products you don't track go in `IGNORE`, e.g. Mizuna).
 - Sprout's seed answer (`~/hrh-ptt/seed-inventory.py`) uses the same `seed_status()`

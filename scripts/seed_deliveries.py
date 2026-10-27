@@ -59,6 +59,7 @@ ALIASES = [
     ('red stem',             'Triton Radish'),     # Joe 10/27/2026: Radish - Red Stem = Triton
     ('rambo',                'Rambo Radish'),
     ('radish - purple',      'Rambo Radish'),      # Joe 10/27/2026
+    ('sango',                'Rambo Radish'),      # Joe 10/27/2026: Sango Purple counts as Rambo
     ('cress - upland',       'Watercress'),        # Joe 10/27/2026
     ('upland cress',         'Watercress'),
     ('broccoli',             'Broccoli'),
@@ -94,11 +95,12 @@ def parse_delivery_text(text):
     t = re.sub(r'\s+', ' ', text or '')
     m = re.search(r'Order number:\s*#?(\d{5,})', t)
     order_no = m.group(1) if m else None
-    a = t.find('Items in this shipment:')
+    marker = 'Items in this shipment:' if 'Items in this shipment:' in t else 'Items purchased:'
+    a = t.find(marker)
     if a < 0:
         return order_no, [], ['no "Items in this shipment" section']
     b = t.find('Summary', a)
-    section = t[a + len('Items in this shipment:'): b if b > 0 else None]
+    section = t[a + len(marker): b if b > 0 else None]
     items, errors = [], []
     for c in CHUNK_RE.finditer(section):
         raw = c.group('body').strip(' |-')
@@ -199,6 +201,18 @@ def plan_restock(vid, name, when, grams, order_no, item, counts, planted):
 
 # ── Gmail + AppSheet + Bark ───────────────────────────────────────────────────
 
+def _get_message(svc, msg_id, tries=3):
+    """Fetch one Gmail message; wait and retry if Gmail says 'too many requests'."""
+    import time
+    for n in range(tries):
+        try:
+            return svc.users().messages().get(userId='me', id=msg_id, format='full').execute()
+        except Exception as e:
+            if n + 1 < tries and ('rateLimitExceeded' in str(e) or ' 429' in str(e) or 'Quota exceeded' in str(e)):
+                time.sleep(20 * (n + 1))
+                continue
+            raise
+
 def fetch_deliveries(svc, msg_text):
     """[{msg_id, when, order_no, items, errors}] oldest first."""
     if svc is None:
@@ -206,7 +220,7 @@ def fetch_deliveries(svc, msg_text):
     resp = svc.users().messages().list(userId='me', q=GMAIL_QUERY.format(d=LOOKBACK_DAYS), maxResults=50).execute()
     out = []
     for meta in resp.get('messages', []):
-        msg = svc.users().messages().get(userId='me', id=meta['id'], format='full').execute()
+        msg = _get_message(svc, meta['id'])
         frm = next((h['value'] for h in msg['payload'].get('headers', []) if h['name'] == 'From'), '')
         if 'trueleafmarket.com' not in frm.lower():
             continue
@@ -321,6 +335,114 @@ def sweep(svc, msg_text, varieties, batches, counts, tracked_names,
         if not dry_run:
             _save_state(seen)
     return report
+
+
+# ── open orders (ordered but not delivered yet) ────────────────────────────────
+
+ORDER_QUERY = ('from:trueleafmarket.com newer_than:{d}d (subject:"received your order" OR '
+               'subject:"ready to ship" OR subject:"picked up" OR subject:"out for delivery" OR '
+               'subject:"has been delivered")')
+ORDER_LOOKBACK_DAYS = 30
+STATUS_RULES = [            # subject keyword → status, checked in this order
+    ('has been delivered', 'delivered'),
+    ('out for delivery',   'out for delivery'),
+    ('picked up',          'shipped'),
+    ('ready to ship',      'packed, ready to ship'),
+    ('received your order', 'ordered'),
+]
+MONTHS = {m: i for i, m in enumerate(
+    ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august',
+     'september', 'october', 'november', 'december'], 1)}
+
+
+def parse_eta(text, ref):
+    """'Estimated delivery: Monday, November 2' → date (year from ref); 'Awaiting ETA' → None."""
+    m = re.search(r'Estimated delivery:\s*(?:\w+day,\s*)?([A-Za-z]+)\s+(\d{1,2})', re.sub(r'\s+', ' ', text or ''))
+    if not m or m.group(1).lower() not in MONTHS:
+        return None
+    month, day = MONTHS[m.group(1).lower()], int(m.group(2))
+    year = ref.year + (1 if month < ref.month - 6 else 0)
+    try:
+        return datetime.date(year, month, day)
+    except ValueError:
+        return None
+
+
+def summarize_orders(emails, tracked_names):
+    """emails: [{when, subject, text}] (any order). Returns open orders, oldest first:
+    [{order, placed, status, status_at, eta, shipping, items:[{title,size,unit,qty,grams,variety}]}]"""
+    by_order = {}
+    for e in sorted(emails, key=lambda e: e['when']):
+        status = next((st for k, st in STATUS_RULES if k in e['subject'].lower()), None)
+        t = re.sub(r'\s+', ' ', e['text'] or '')
+        order_no = order_number(t)
+        if not status or not order_no:
+            continue
+        o = by_order.setdefault(order_no, dict(order=order_no, placed=e['when'].date(), status=None,
+                                               status_at=None, eta=None, shipping=None, items=[]))
+        o['status'], o['status_at'] = status, e['when']
+        _, items, _ = parse_delivery_text(t)
+        if items:
+            o['items'] = items
+        eta = parse_eta(t, e['when'])
+        if eta or 'awaiting eta' in t.lower():
+            o['eta'] = eta                      # newest email wins (None = no ETA yet)
+        sm = re.search(r'Shipping - (.+?) \$', t)
+        if sm and not o['shipping']:
+            o['shipping'] = re.sub(r'\s*\(.*?\)', '', sm.group(1)).replace('USPS ', '').strip()
+        pm = re.search(r'Order date:\s*([A-Za-z]{3}) (\d{1,2}), (\d{4})', t)
+        if pm:
+            try:
+                o['placed'] = datetime.datetime.strptime(' '.join(pm.groups()), '%b %d %Y').date()
+            except ValueError:
+                pass
+    out = []
+    for o in by_order.values():
+        if o['status'] == 'delivered':
+            continue
+        for it in o['items']:
+            it['variety'] = (None if any(k in it['title'].lower() for k in IGNORE)
+                             else match_variety(it['title'], tracked_names))
+        out.append(o)
+    return sorted(out, key=lambda o: o['placed'])
+
+
+def open_orders(svc, msg_text, tracked_names, days=ORDER_LOOKBACK_DAYS):
+    """True Leaf orders placed in the last `days` days that have no delivered email yet."""
+    if svc is None:
+        return []
+    resp = svc.users().messages().list(userId='me', q=ORDER_QUERY.format(d=days), maxResults=100).execute()
+    emails = []
+    for meta in resp.get('messages', []):
+        msg = _get_message(svc, meta['id'])
+        hdrs = {h['name']: h['value'] for h in msg['payload'].get('headers', [])}
+        if 'trueleafmarket.com' not in hdrs.get('From', '').lower():
+            continue
+        emails.append(dict(when=datetime.datetime.fromtimestamp(int(msg['internalDate']) / 1000),
+                           subject=hdrs.get('Subject', ''), text=msg_text(msg)))
+    return summarize_orders(emails, tracked_names)
+
+
+def describe_order_status(o):
+    """Short plain words, e.g. 'shipped Oct 26, arriving Mon Nov 2' or 'shipped Oct 26, no ETA yet'."""
+    when = f"{o['status_at']:%b} {o['status_at'].day}" if o['status_at'] else ''
+    eta = f"arriving {o['eta']:%a %b} {o['eta'].day}" if o['eta'] else 'no ETA yet'
+    ship = f" ({o['shipping']})" if o['shipping'] and o['status'] != 'out for delivery' else ''
+    if o['status'] == 'out for delivery':
+        return 'out for delivery today'
+    return f"{o['status']} {when}, {eta}{ship}"
+
+
+def on_order_by_variety(orders):
+    """{variety: [{order, lbs, status_text, eta}]} for tracked varieties."""
+    out = {}
+    for o in orders:
+        for it in o['items']:
+            if it.get('variety'):
+                out.setdefault(it['variety'], []).append(dict(
+                    order=o['order'], lbs=round(it['grams'] / G_PER_LB, 2),
+                    status=describe_order_status(o), eta=o['eta'].isoformat() if o['eta'] else None))
+    return out
 
 
 def order_number(text):

@@ -10,7 +10,7 @@ Data comes from AppSheet ("Growth Controls" and "Growth Recipes" apps) — no da
 
 A standalone Python 3 script that runs the same seed-inventory calculations as
 the dashboard and sends a push notification to your iPhone if any seeds are running low.  
-No extra packages needed — it uses only Python's built-in standard library.
+Run it with `~/hrh-venv/bin/python` (the Gmail checks need the Google libraries installed there).
 
 ### What it alerts on
 
@@ -51,7 +51,7 @@ precedence over `~/.hrh_env`.
 **3. Test it first (dry run — no notification sent):**
 
 ```bash
-python3 ~/seed_inventory/scripts/check_seeds.py --dry-run
+~/hrh-venv/bin/python ~/seed_inventory/scripts/check_seeds.py --dry-run
 ```
 
 This prints the full status table and shows exactly what the notification *would* say.
@@ -59,27 +59,33 @@ This prints the full status table and shows exactly what the notification *would
 **4. Send one real test notification:**
 
 ```bash
-python3 ~/seed_inventory/scripts/check_seeds.py --test-bark
+~/hrh-venv/bin/python ~/seed_inventory/scripts/check_seeds.py --test-bark
 ```
 
 A message labeled "TEST" will arrive on your iPhone so you can confirm the Bark key works.
 
-### Crontab — runs every day at 7:00 AM Eastern time
+### When it runs (updated 2026-10-29)
 
-The crontab entry below sets the timezone inline and is already installed on the HRH Pi:
+**From 2026-10-29 the seed math runs inside the Pi's unified inventory job**, `hrh inventory refresh all`
+(`~/hrh-inventory/inventory.py`, cronwatch job `inventory-refresh`, **6:30 AM Eastern**, hrh-venv Python).
+That job imports `scripts/check_seeds.py` and `scripts/seed_deliveries.py` from this repo, so the
+dashboard, the cron job and Sprout all share one copy of the math. Nothing in this repo was removed.
+
+Until the 3-day parallel check finishes (about 2026-11-01), the old standalone job still runs too:
+cronwatch job `check_seeds` at **7:20 AM** Eastern, with the **hrh-venv** Python (system `python3`
+lacks the Google libraries for the Gmail checks):
 
 ```
-0 7 * * * TZ=America/New_York /usr/bin/python3 /home/highridgehydro/seed_inventory/scripts/check_seeds.py >> /home/highridgehydro/hrh_seed_check.log 2>&1
+20 7 * * * /usr/bin/python3 /home/highridgehydro/hrh-cronwatch/cw.py check_seeds
 ```
+(`~/hrh-cronwatch/jobs/check_seeds.sh` runs `hrh check-seeds`, which is
+`/home/highridgehydro/hrh-venv/bin/python /home/highridgehydro/seed_inventory/scripts/check_seeds.py`.)
 
-To add it without overwriting your existing cron jobs:
+**To turn the old job off:** run `~/hrh-inventory/retire_old_inventory_jobs.sh` on the Pi (comments out the
+crontab line; nothing is deleted). **To turn the new job off:** comment out the `inventory-refresh` line in
+`crontab -e`. The format is `minute hour * * *`, so `30 8` = 8:30 AM, `0 6` = 6:00 AM.
 
-```bash
-(crontab -l 2>/dev/null; echo '0 7 * * * TZ=America/New_York /usr/bin/python3 /home/highridgehydro/seed_inventory/scripts/check_seeds.py >> /home/highridgehydro/hrh_seed_check.log 2>&1') | crontab -
-```
-
-**To turn it off:** run `crontab -e`, find the two lines above, and delete them (or put a `#` in front of the `0 7` line).  
-**To change the time:** edit the `0 7` part. The format is `minute hour * * *`, so `30 8` = 8:30 AM, `0 6` = 6:00 AM.
+Ask Sprout "how are we on seed" or run `hrh inventory status seed` on the Pi for the same numbers any time.
 
 ### Log file
 
@@ -117,7 +123,7 @@ Delivered orders no longer count as "on order", and vendor ads in emails are ign
 (last 30 days) and lists every order not delivered yet: items, status and True Leaf's
 estimated delivery date. Seeds in an open order are not alerted as "order now"; the
 7:20 AM Bark says "low, already ordered" with the status. Results are saved to
-`~/hrh-cache/seed_status.json`, which the 7:30 AM morning report reads (its old
+`~/hrh-cache/seed_status.json` (and, since 2026-10-29, `~/hrh-cache/inventory_status.json`), which the 7:30 AM morning report reads (its old
 separate low-seed math was removed), so the seed check, Sprout and the morning
 report always agree. "Sango Purple" radish counts as Rambo Radish.
 

@@ -241,16 +241,21 @@ function compute() {
       r.trays = sd > 0 ? Math.max(0, r.onHand) / sd : null;
       if (r.onHand <= 0) { r.runOut = today; r.runNote = 'out now'; }
       else {
+        // The schedule is only filled in a few weeks ahead, so a thin far-out schedule must not push the date back.
+        // Walk forward one week at a time; each week uses the HIGHER of that week's scheduled plantings and the recent 28-day pace.
+        const rate = used28 / 28, lastFut = fut.length ? fut[fut.length - 1].date : null;
         let cum = 0;
-        for (const f of fut) { cum += f.g; if (cum > r.onHand) { r.runOut = f.date; r.runNote = 'scheduled plantings'; break; } }
-        if (!r.runOut) {
-          const rate = used28 / 28;
-          if (rate > 0) {
-            const last = fut.length ? fut[fut.length - 1].date : today;
-            r.runOut = new Date(last.getTime() + Math.max(0, r.onHand - futTotal) / rate * DAY);
-            r.runNote = fut.length ? 'after schedule ends, at recent pace' : 'at recent pace';
-          } else r.runNote = 'no recent use';
+        for (let w = 0; w < 1040 && !r.runOut; w++) {
+          const ws = new Date(today.getTime() + w * 7 * DAY), we = new Date(ws.getTime() + 7 * DAY);
+          if (rate <= 0 && (!lastFut || ws > lastFut)) break;
+          const wk = fut.filter(f => f.date >= ws && f.date < we), sched = wk.reduce((a, f) => a + f.g, 0);
+          if (sched >= rate * 7) {
+            for (const f of wk) { cum += f.g; if (cum > r.onHand) { r.runOut = f.date; r.runNote = 'scheduled plantings'; break; } }
+          } else if (cum + rate * 7 > r.onHand) {
+            r.runOut = new Date(ws.getTime() + (r.onHand - cum) / rate * DAY); r.runNote = 'at recent pace';
+          } else cum += rate * 7;
         }
+        if (!r.runOut) r.runNote = 'no recent use';
       }
       const days = r.runOut ? (r.runOut - today) / DAY : null;
       r.status = r.onHand <= 0 ? 'OUT' : r.pct < LOW_PCT ? 'LOW' : (days !== null && days <= SOON_DAYS) ? 'SOON' : 'OK';

@@ -365,27 +365,39 @@ def compute_variety(v, planted, future, lots, counts, now, today):
         result['run_out']  = today          # datetime.date
         result['run_note'] = 'out now'
     else:
-        # Walk scheduled future plantings to find exhaustion point
-        cum = 0.0
-        for f in fut:
-            cum += f['g']
-            if cum > on_hand:
-                d = f['date']
-                result['run_out']  = d.date() if isinstance(d, datetime.datetime) else d
-                result['run_note'] = 'scheduled plantings'
-                break
+        # The schedule is only filled in a few weeks ahead, so a thin far-out
+        # schedule must not push the date back. Walk forward one week at a time;
+        # each week uses the HIGHER of that week's scheduled plantings and the
+        # recent 28-day pace (mirrors the dashboard).
+        def as_date(d):
+            return d.date() if isinstance(d, datetime.datetime) else d
 
-        if result['run_out'] is None:
-            rate = used28 / 28.0 if used28 > 0 else 0.0
-            if rate > 0:
-                last = fut[-1]['date'] if fut else datetime.datetime(today.year, today.month, today.day)
-                last_d = last.date() if isinstance(last, datetime.datetime) else last
-                extra  = max(0.0, on_hand - fut_total) / rate
-                result['run_out']  = last_d + datetime.timedelta(days=extra)
-                result['run_note'] = ('after schedule ends, at recent pace' if fut
-                                      else 'at recent pace')
+        rate     = used28 / 28.0 if used28 > 0 else 0.0
+        last_fut = as_date(fut[-1]['date']) if fut else None
+        cum = 0.0
+        for w in range(1040):
+            ws = today + datetime.timedelta(days=7 * w)
+            we = ws + datetime.timedelta(days=7)
+            if rate <= 0 and (last_fut is None or ws > last_fut):
+                break
+            wk    = [f for f in fut if ws <= as_date(f['date']) < we]
+            sched = sum(f['g'] for f in wk)
+            if sched >= rate * 7:
+                for f in wk:
+                    cum += f['g']
+                    if cum > on_hand:
+                        result['run_out']  = as_date(f['date'])
+                        result['run_note'] = 'scheduled plantings'
+                        break
+            elif cum + rate * 7 > on_hand:
+                result['run_out']  = ws + datetime.timedelta(days=(on_hand - cum) / rate)
+                result['run_note'] = 'at recent pace'
             else:
-                result['run_note'] = 'no recent use'
+                cum += rate * 7
+            if result['run_out'] is not None:
+                break
+        if result['run_out'] is None:
+            result['run_note'] = 'no recent use'
 
     # Status chip — matches dashboard (SOON_DAYS = 14)
     days = (result['run_out'] - today).days if result['run_out'] else None
